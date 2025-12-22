@@ -1,0 +1,18 @@
+# Deployment Configuration
+# Copy this file to .deployment-config and fill in your values
+# This file is sourced by the deployment scripts
+
+# Remote server configuration (can be overridden via environment variables)
+# REMOTE_HOST=""  # e.g., user@example.com
+# REMOTE_PATH=""  # e.g., /var/www/html
+
+# File syncing configuration
+# FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
+# FILES_GIT_BRANCH="main"  # Branch to use for files
+
+# Uploaded files sync behavior
+# SYNC_UPLOADED_FILES="ask"  # Options: auto, ask, skip
+
+# Uploaded files transfer method
+# UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
+

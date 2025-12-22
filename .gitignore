@@ -1,0 +1,5 @@
+# Ignore temporary Git repos for file syncing
+/.files-git-temp
+
+# Ignore deployment configuration (may contain sensitive info)
+/.deployment-config
