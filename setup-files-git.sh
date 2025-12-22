@@ -5,7 +5,7 @@
 
 set -e
 
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Setting up Git repository for file syncing..."
 echo ""
@@ -26,7 +26,7 @@ read -p "Enter branch name (default: main): " BRANCH_NAME
 BRANCH_NAME=${BRANCH_NAME:-main}
 
 # Initialize local temp repo
-TEMP_DIR="${PROJECT_DIR}/.files-git-temp"
+TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
 if [ -d "${TEMP_DIR}" ]; then
     echo "Removing existing temp directory..."
     rm -rf "${TEMP_DIR}"
@@ -52,7 +52,7 @@ else
 fi
 
 # Create or update deployment config file
-CONFIG_FILE="${PROJECT_DIR}/.deployment-config"
+CONFIG_FILE="${SCRIPT_DIR}/.deployment-config"
 echo ""
 echo "Updating deployment configuration..."
 

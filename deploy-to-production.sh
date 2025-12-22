@@ -17,13 +17,14 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration - EDIT THESE VALUES or use .deployment-config file
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DB_BACKUP_DIR="${PROJECT_DIR}/backups"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Default values (can be overridden by .deployment-config or environment variables)
+# SITE_PATH is the path to the Concrete CMS site root (where composer.json, public/, etc. are)
+SITE_PATH=""  # REQUIRED: e.g., /var/www/html or /home/user/site
 REMOTE_HOST=""  # e.g., user@example.com
-REMOTE_PATH=""  # e.g., /var/www/html
+REMOTE_PATH=""  # e.g., /var/www/html (path to site on remote server)
 REMOTE_USER=""  # SSH user (combined with REMOTE_HOST if needed)
 SYNC_UPLOADED_FILES="ask"  # Options: auto, ask, skip
 UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
@@ -31,12 +32,13 @@ FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 
 # Load configuration from .deployment-config if it exists
-CONFIG_FILE="${PROJECT_DIR}/.deployment-config"
+CONFIG_FILE="${SCRIPT_DIR}/.deployment-config"
 if [ -f "${CONFIG_FILE}" ]; then
     source "${CONFIG_FILE}"
 fi
 
 # Environment variables override config file values
+SITE_PATH="${SITE_PATH:-}"
 REMOTE_HOST="${REMOTE_HOST:-}"
 REMOTE_PATH="${REMOTE_PATH:-}"
 REMOTE_USER="${REMOTE_USER:-}"
@@ -44,6 +46,15 @@ SYNC_UPLOADED_FILES="${SYNC_UPLOADED_FILES:-ask}"
 UPLOADED_FILES_METHOD="${UPLOADED_FILES_METHOD:-git}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
+
+# Set PROJECT_DIR to SITE_PATH (the actual site location)
+# For backwards compatibility, if SITE_PATH not set but PROJECT_DIR is, use that
+if [ -z "$SITE_PATH" ] && [ -n "${PROJECT_DIR:-}" ]; then
+    SITE_PATH="${PROJECT_DIR}"
+fi
+
+PROJECT_DIR="${SITE_PATH}"  # Use SITE_PATH as PROJECT_DIR throughout
+DB_BACKUP_DIR="${SITE_PATH}/backups"
 
 # If REMOTE_USER is set but REMOTE_HOST doesn't include user, combine them
 if [ -n "$REMOTE_USER" ] && [ -n "$REMOTE_HOST" ] && [[ ! "$REMOTE_HOST" == *"@"* ]]; then
@@ -75,16 +86,41 @@ print_error() {
 check_prerequisites() {
     print_step "Checking prerequisites..."
     
+    # SITE_PATH is required
+    if [ -z "$SITE_PATH" ]; then
+        print_error "SITE_PATH must be set (path to Concrete CMS site root)"
+        print_error "Set it in .deployment-config or as environment variable:"
+        print_error "  SITE_PATH=/path/to/site"
+        exit 1
+    fi
+    
+    # Resolve and validate SITE_PATH
+    if [ ! -d "$SITE_PATH" ]; then
+        print_error "SITE_PATH does not exist: ${SITE_PATH}"
+        exit 1
+    fi
+    
+    # Check if it looks like a Concrete CMS site
+    if [ ! -d "${SITE_PATH}/public" ] && [ ! -f "${SITE_PATH}/composer.json" ]; then
+        print_warning "SITE_PATH doesn't appear to be a Concrete CMS site (no public/ or composer.json found)"
+    fi
+    
+    PROJECT_DIR="${SITE_PATH}"  # Use SITE_PATH as PROJECT_DIR throughout
+    
     command -v mysqldump >/dev/null 2>&1 || { print_error "mysqldump is required but not installed"; exit 1; }
     command -v rsync >/dev/null 2>&1 || { print_error "rsync is required but not installed"; exit 1; }
     command -v composer >/dev/null 2>&1 || { print_error "composer is required but not installed"; exit 1; }
     
     if [ -z "$REMOTE_HOST" ] || [ -z "$REMOTE_PATH" ]; then
-        print_error "REMOTE_HOST and REMOTE_PATH must be configured in this script"
+        print_error "REMOTE_HOST and REMOTE_PATH must be set"
+        print_error "Set in .deployment-config or as environment variables:"
+        print_error "  REMOTE_HOST=server.com REMOTE_PATH=/path/to/site"
         exit 1
     fi
     
     echo "✓ All prerequisites met"
+    echo "  Local site path: ${SITE_PATH}"
+    echo "  Production server: ${REMOTE_HOST}:${REMOTE_PATH}"
 }
 
 # Export database
@@ -186,7 +222,7 @@ deploy_uploaded_files() {
                 print_warning "Falling back to zip method"
                 UPLOADED_FILES_METHOD="zip"
             else
-                FILES_TEMP_DIR="${PROJECT_DIR}/.files-git-temp"
+                FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
                 
                 # Initialize or update local git repo for files
                 if [ ! -d "${FILES_TEMP_DIR}" ]; then
@@ -220,18 +256,19 @@ deploy_uploaded_files() {
                 echo "Pulling files on production server..."
                 ssh "${REMOTE_HOST}" << EOF
                     cd ${REMOTE_PATH}
-                    if [ ! -d ".files-git-temp" ]; then
-                        mkdir -p .files-git-temp
-                        cd .files-git-temp
+                    TEMP_DIR="\$HOME/.concrete-sync-files-temp"
+                    if [ ! -d "\${TEMP_DIR}" ]; then
+                        mkdir -p "\${TEMP_DIR}"
+                        cd "\${TEMP_DIR}"
                         git init
                         git remote add origin ${FILES_GIT_REPO} 2>/dev/null || git remote set-url origin ${FILES_GIT_REPO}
                     else
-                        cd .files-git-temp
+                        cd "\${TEMP_DIR}"
                     fi
                     git fetch origin ${FILES_GIT_BRANCH}
                     git reset --hard origin/${FILES_GIT_BRANCH}
-                    mkdir -p ../public/application/files
-                    cp -r * ../public/application/files/ 2>/dev/null || true
+                    mkdir -p ${REMOTE_PATH}/public/application/files
+                    cp -r * ${REMOTE_PATH}/public/application/files/ 2>/dev/null || true
                     echo "✓ Files synced from Git"
 EOF
                 
