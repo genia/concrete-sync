@@ -135,10 +135,15 @@ check_prerequisites() {
 
 # Export database
 export_database() {
-    print_step "Exporting database..."
+    print_step "Exporting database from development..."
     
     mkdir -p "${DB_BACKUP_DIR}"
     DB_FILE="${DB_BACKUP_DIR}/database_${TIMESTAMP}.sql"
+    
+    echo "Exporting database..."
+    echo "  Host: ${DB_HOSTNAME}"
+    echo "  Database: ${DB_DATABASE}"
+    echo "  User: ${DB_USERNAME}"
     
     mysqldump -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" \
         "${DB_DATABASE}" > "${DB_FILE}"
@@ -147,7 +152,10 @@ export_database() {
     gzip -f "${DB_FILE}"
     DB_FILE="${DB_FILE}.gz"
     
-    echo "✓ Database exported to ${DB_FILE}"
+    FILE_SIZE=$(du -h "${DB_FILE}" | cut -f1)
+    echo "✓ Database exported"
+    echo "  File: ${DB_FILE}"
+    echo "  Size: ${FILE_SIZE}"
     echo "${DB_FILE}"
 }
 
@@ -376,6 +384,12 @@ import_database() {
         read -s -p "Enter production DB password: " PROD_DB_PASS
         echo
     fi
+    
+    echo "Importing database..."
+    echo "  Source: ${DB_FILE}"
+    echo "  Target: ${PROD_DB_HOST}/${PROD_DB_NAME}"
+    echo "  User: ${PROD_DB_USER}"
+    echo "  Server: ${REMOTE_HOST}"
     
     # Transfer and import database
     if [[ "$DB_FILE" == *.gz ]]; then

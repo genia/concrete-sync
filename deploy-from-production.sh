@@ -81,8 +81,21 @@ print_error() {
 
 # Check if running on production server directly
 is_running_on_production() {
-    # If REMOTE_HOST is not set, assume we're running on production server
-    [ -z "$REMOTE_HOST" ]
+    # If REMOTE_HOST is not set AND we're not explicitly running from dev, 
+    # check if SITE_PATH matches a typical production path or if we're on the production host
+    if [ -z "$REMOTE_HOST" ]; then
+        # Check if we're explicitly told we're on production via environment variable
+        if [ "${RUNNING_ON_PRODUCTION:-}" = "true" ]; then
+            return 0
+        fi
+        # If REMOTE_PATH is set and matches SITE_PATH, we're likely on production
+        if [ -n "$REMOTE_PATH" ] && [ "$REMOTE_PATH" = "$SITE_PATH" ]; then
+            return 0
+        fi
+        # Otherwise, assume we're on dev and need REMOTE_HOST
+        return 1
+    fi
+    return 1
 }
 
 # Check prerequisites
@@ -112,26 +125,65 @@ check_prerequisites() {
     
     command -v mysql >/dev/null 2>&1 || { print_error "mysql client is required but not installed"; exit 1; }
     
-    if is_running_on_production; then
-        # Running on production server - SITE_PATH is the production site
-        PROD_PATH="${SITE_PATH}"
-        echo "✓ Running directly on production server"
-        echo "  Site path: ${PROD_PATH}"
-    else
-        # Running from dev, need REMOTE_HOST and REMOTE_PATH
-        if [ -z "$REMOTE_HOST" ] || [ -z "$REMOTE_PATH" ]; then
-            print_error "REMOTE_HOST and REMOTE_PATH must be set when running from dev"
-            print_error "Set in .deployment-config or as environment variables:"
-            print_error "  REMOTE_HOST=server.com REMOTE_PATH=/path/to/site"
+    # Determine if we're on production or dev
+    # If REMOTE_HOST is set, we're definitely on dev
+    # If REMOTE_HOST is not set, check if REMOTE_PATH matches SITE_PATH (likely on production)
+    if [ -n "$REMOTE_HOST" ]; then
+        # REMOTE_HOST is set, so we're running from dev
+        if [ -z "$REMOTE_PATH" ]; then
+            print_error "REMOTE_PATH must be set when REMOTE_HOST is set"
+            print_error "Set in .deployment-config or as environment variable:"
+            print_error "  REMOTE_PATH=/path/to/site"
             exit 1
         fi
-        command -v rsync >/dev/null 2>&1 || { print_error "rsync is required but not installed"; exit 1; }
-        command -v ssh >/dev/null 2>&1 || { print_error "ssh is required but not installed"; exit 1; }
-        command -v scp >/dev/null 2>&1 || { print_error "scp is required but not installed"; exit 1; }
         PROD_PATH="${REMOTE_PATH}"
         echo "✓ Running from dev machine"
         echo "  Local site path: ${SITE_PATH}"
         echo "  Production server: ${REMOTE_HOST}:${PROD_PATH}"
+        
+        # Only require SSH tools if we need them (not needed for Git method file sync)
+        # But we might need them for database export, so check based on method
+        if [ "$SYNC_DATABASE" = "auto" ] && [ -z "$PROD_DB_HOST" ]; then
+            # Will need SSH to export database if DB credentials not set
+            command -v ssh >/dev/null 2>&1 || { print_error "ssh is required for database export"; exit 1; }
+        fi
+        if [ "$UPLOADED_FILES_METHOD" != "git" ]; then
+            # Need SSH tools for zip/rsync methods
+            command -v rsync >/dev/null 2>&1 || { print_error "rsync is required but not installed"; exit 1; }
+            command -v ssh >/dev/null 2>&1 || { print_error "ssh is required but not installed"; exit 1; }
+            command -v scp >/dev/null 2>&1 || { print_error "scp is required but not installed"; exit 1; }
+        elif [ "$SYNC_DATABASE" = "auto" ]; then
+            # For Git method, only need SSH if we're syncing database and DB isn't directly accessible
+            # If PROD_DB_HOST is set, we might be able to connect directly (no SSH needed)
+            # But if not set, we'll need SSH to run mysqldump on production server
+            # For now, we'll only require SSH if DB export is needed and we're using SSH method
+            command -v ssh >/dev/null 2>&1 || { print_warning "ssh not available - database export from production may require direct DB access"; }
+        fi
+    else
+        # REMOTE_HOST not set - check if we're on production
+        if [ "${RUNNING_ON_PRODUCTION:-}" = "true" ] || [ "$REMOTE_PATH" = "$SITE_PATH" ]; then
+            # Running on production server
+            PROD_PATH="${SITE_PATH}"
+            echo "✓ Running directly on production server"
+            echo "  Site path: ${PROD_PATH}"
+        else
+            # REMOTE_HOST not set - for Git method, this is OK if production already pushed files
+            # We only need REMOTE_HOST if:
+            # 1. Using zip/rsync file methods, OR
+            # 2. Need to export database from production server
+            if [ "$UPLOADED_FILES_METHOD" != "git" ]; then
+                print_error "REMOTE_HOST must be set for ${UPLOADED_FILES_METHOD} file method"
+                print_error "Set in .deployment-config or as environment variable:"
+                print_error "  REMOTE_HOST=server.com"
+                exit 1
+            elif [ "$SYNC_DATABASE" = "auto" ] && [ -z "$PROD_DB_HOST" ]; then
+                print_warning "REMOTE_HOST not set - assuming production database is directly accessible"
+                print_warning "Or production files were already pushed to Git from production server"
+            fi
+            # For Git method without REMOTE_HOST, assume we're just pulling from Git
+            # Production path doesn't matter since we're not accessing it
+            PROD_PATH="${REMOTE_PATH:-${SITE_PATH}}"
+        fi
     fi
     
     if [ ! -f "${PROJECT_DIR}/.env" ] && ! is_running_on_production; then
@@ -159,14 +211,19 @@ export_production_database() {
         echo
     fi
     
+    # Determine how to export database
     if is_running_on_production; then
         # Running on production server directly
         mysqldump -h"${PROD_DB_HOST}" -u"${PROD_DB_USER}" -p"${PROD_DB_PASS}" "${PROD_DB_NAME}" | gzip > "${DB_FILE}.gz"
-    else
-        # Export via SSH
+    elif [ -n "$REMOTE_HOST" ]; then
+        # Running from dev, export via SSH to production server
         ssh "${REMOTE_HOST}" \
             "mysqldump -h${PROD_DB_HOST} -u${PROD_DB_USER} -p${PROD_DB_PASS} ${PROD_DB_NAME}" \
             | gzip > "${DB_FILE}.gz"
+    else
+        # No REMOTE_HOST - try direct database connection (if DB is accessible from dev)
+        print_warning "No REMOTE_HOST set - attempting direct database connection"
+        mysqldump -h"${PROD_DB_HOST}" -u"${PROD_DB_USER}" -p"${PROD_DB_PASS}" "${PROD_DB_NAME}" | gzip > "${DB_FILE}.gz"
     fi
     
     echo "✓ Database exported from production to ${DB_FILE}.gz"
@@ -198,8 +255,11 @@ import_database() {
     source "${PROJECT_DIR}/.env"
     
     print_warning "Importing database - this will overwrite your local database!"
+    echo "  Source: ${DB_FILE}"
+    echo "  Target: ${DB_HOSTNAME}/${DB_DATABASE}"
     
     # Import database
+    echo "Importing database..."
     if [[ "$DB_FILE" == *.gz ]]; then
         gunzip -c "${DB_FILE}" | mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}"
     else
@@ -283,14 +343,23 @@ pull_uploaded_files() {
                     # Running on production server directly
                     PROD_FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
                     
-                    if [ ! -d "${PROD_FILES_TEMP_DIR}" ]; then
-                        mkdir -p "${PROD_FILES_TEMP_DIR}"
-                        cd "${PROD_FILES_TEMP_DIR}"
-                        git init
-                        git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+                    # Clean up and recreate temp directory to avoid conflicts
+                    if [ -d "${PROD_FILES_TEMP_DIR}" ]; then
+                        echo "Cleaning up existing temp directory..."
+                        rm -rf "${PROD_FILES_TEMP_DIR}"
+                    fi
+                    
+                    mkdir -p "${PROD_FILES_TEMP_DIR}"
+                    cd "${PROD_FILES_TEMP_DIR}"
+                    git init
+                    git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+                    
+                    # Try to fetch existing branch
+                    git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
+                    if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
+                        git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
                     else
-                        cd "${PROD_FILES_TEMP_DIR}"
-                        git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
+                        git checkout -b "${FILES_GIT_BRANCH}"
                     fi
                     
                     # Copy files to temp directory from production site
@@ -301,22 +370,40 @@ pull_uploaded_files() {
                     git add -A
                     if ! git diff --staged --quiet; then
                         git commit -m "Sync files from production $(date +%Y-%m-%d\ %H:%M:%S)" || true
+                        # Pull first to merge any remote changes, then push
+                        if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
+                            git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
+                        fi
                         git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
+                    else
+                        # Even if no changes, pull to stay in sync
+                        if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
+                            git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
+                        fi
                     fi
                     echo "✓ Files pushed to Git"
-                else
-                    # Running from dev, push via SSH
+                elif [ -n "$REMOTE_HOST" ]; then
+                    # Running from dev, push via SSH to production server
                     # Use a temp directory in the home directory (not in the site directory)
                     ssh "${REMOTE_HOST}" << EOF
                         TEMP_DIR="\$HOME/.concrete-sync-files-temp"
-                        if [ ! -d "\${TEMP_DIR}" ]; then
-                            mkdir -p "\${TEMP_DIR}"
-                            cd "\${TEMP_DIR}"
-                            git init
-                            git remote add origin ${FILES_GIT_REPO} 2>/dev/null || git remote set-url origin ${FILES_GIT_REPO}
+                        # Clean up and recreate temp directory to avoid conflicts
+                        if [ -d "\${TEMP_DIR}" ]; then
+                            echo "Cleaning up existing temp directory on production server..."
+                            rm -rf "\${TEMP_DIR}"
+                        fi
+                        
+                        mkdir -p "\${TEMP_DIR}"
+                        cd "\${TEMP_DIR}"
+                        git init
+                        git remote add origin ${FILES_GIT_REPO} 2>/dev/null || git remote set-url origin ${FILES_GIT_REPO}
+                        
+                        # Try to fetch existing branch
+                        git fetch origin ${FILES_GIT_BRANCH} 2>/dev/null || true
+                        if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
+                            git checkout -b ${FILES_GIT_BRANCH} "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout ${FILES_GIT_BRANCH}
                         else
-                            cd "\${TEMP_DIR}"
-                            git fetch origin ${FILES_GIT_BRANCH} 2>/dev/null || true
+                            git checkout -b ${FILES_GIT_BRANCH}
                         fi
                         
                         # Copy files to temp directory from production site
@@ -327,10 +414,25 @@ pull_uploaded_files() {
                         git add -A
                         if ! git diff --staged --quiet; then
                             git commit -m "Sync files from production \$(date +%Y-%m-%d\ %H:%M:%S)" || true
+                            # Pull first to merge any remote changes, then push
+                            if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
+                                git pull origin ${FILES_GIT_BRANCH} --no-edit 2>/dev/null || true
+                            fi
                             git push origin HEAD:${FILES_GIT_BRANCH} || git push -u origin ${FILES_GIT_BRANCH}
+                        else
+                            # Even if no changes, pull to stay in sync
+                            if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
+                                git pull origin ${FILES_GIT_BRANCH} --no-edit 2>/dev/null || true
+                            fi
                         fi
                         echo "✓ Files pushed to Git"
 EOF
+                else
+                    # No REMOTE_HOST - files should already be in Git from production server
+                    echo "REMOTE_HOST not set - assuming files were already pushed to Git from production"
+                    echo "If files need to be synced, either:"
+                    echo "  1. Run this script on production server first to push files to Git, OR"
+                    echo "  2. Set REMOTE_HOST to connect to production and push files via SSH"
                 fi
                 
                 # Pull to local dev (only if not running on production)
@@ -338,17 +440,19 @@ EOF
                     echo "Pulling files from Git to local development..."
                     FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
                     
-                    if [ ! -d "${FILES_TEMP_DIR}" ]; then
-                        mkdir -p "${FILES_TEMP_DIR}"
-                        cd "${FILES_TEMP_DIR}"
-                        git init
-                        git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
-                    else
-                        cd "${FILES_TEMP_DIR}"
+                    # Clean up and recreate to ensure clean state
+                    if [ -d "${FILES_TEMP_DIR}" ]; then
+                        echo "Cleaning up existing temp directory..."
+                        rm -rf "${FILES_TEMP_DIR}"
                     fi
                     
+                    mkdir -p "${FILES_TEMP_DIR}"
+                    cd "${FILES_TEMP_DIR}"
+                    git init
+                    git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+                    
                     git fetch origin "${FILES_GIT_BRANCH}"
-                    git reset --hard "origin/${FILES_GIT_BRANCH}"
+                    git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
                     
                     # Copy to local files directory
                     mkdir -p "${PROJECT_DIR}/public/application/files"
@@ -465,16 +569,30 @@ main() {
         install_dependencies
     fi
     
-    # Export and import database (only if running from dev)
-    if ! is_running_on_production; then
-        if [ "$SYNC_DATABASE" = "auto" ]; then
+    # Handle database sync
+    if [ "$SYNC_DATABASE" = "auto" ]; then
+        if is_running_on_production; then
+            # Running on production - export database for later import to dev
+            print_step "Exporting database from production (for dev sync)..."
+            DB_FILE=$(export_production_database)
+            echo "✓ Database exported to: ${DB_FILE}"
+            echo "  This will be imported when you run this script from dev machine"
+        else
+            # Running from dev - export and import
+            print_step "Syncing database from production to dev..."
             DB_FILE=$(export_production_database)
             import_database "${DB_FILE}"
+        fi
+    else
+        if is_running_on_production; then
+            echo "Database sync disabled (SYNC_DATABASE=skip)"
         else
             echo "Database sync disabled (SYNC_DATABASE=skip)"
         fi
-        
-        # Clear caches
+    fi
+    
+    # Clear caches (only if running from dev)
+    if ! is_running_on_production; then
         clear_caches
     fi
     
