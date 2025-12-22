@@ -22,10 +22,15 @@ SITE_PATH=""  # REQUIRED: e.g., /var/www/html or /home/user/site
 REMOTE_HOST=""  # e.g., user@example.com (only needed when running from dev)
 REMOTE_PATH=""  # e.g., /var/www/html (path to site on remote server)
 REMOTE_USER=""  # SSH user (combined with REMOTE_HOST if needed)
-SYNC_UPLOADED_FILES="ask"  # Options: auto, ask, skip
+SYNC_UPLOADED_FILES="auto"  # Options: auto, ask, skip
 UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
 FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
+SYNC_DATABASE="auto"  # Options: auto, skip
+PROD_DB_HOST=""  # Production database hostname (from config or env)
+PROD_DB_NAME=""  # Production database name (from config or env)
+PROD_DB_USER=""  # Production database username (from config or env)
+PROD_DB_PASS=""  # Production database password (from config or env)
 
 # Load configuration from .deployment-config if it exists
 CONFIG_FILE="${SCRIPT_DIR}/.deployment-config"
@@ -38,10 +43,15 @@ SITE_PATH="${SITE_PATH:-}"
 REMOTE_HOST="${REMOTE_HOST:-}"
 REMOTE_PATH="${REMOTE_PATH:-}"
 REMOTE_USER="${REMOTE_USER:-}"
-SYNC_UPLOADED_FILES="${SYNC_UPLOADED_FILES:-ask}"
+SYNC_UPLOADED_FILES="${SYNC_UPLOADED_FILES:-auto}"
 UPLOADED_FILES_METHOD="${UPLOADED_FILES_METHOD:-git}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
+SYNC_DATABASE="${SYNC_DATABASE:-auto}"
+PROD_DB_HOST="${PROD_DB_HOST:-}"
+PROD_DB_NAME="${PROD_DB_NAME:-}"
+PROD_DB_USER="${PROD_DB_USER:-}"
+PROD_DB_PASS="${PROD_DB_PASS:-}"
 
 # Set PROJECT_DIR to SITE_PATH (the actual site location)
 # For backwards compatibility, if SITE_PATH not set but PROJECT_DIR is, use that
@@ -139,12 +149,15 @@ export_production_database() {
     mkdir -p "${DB_BACKUP_DIR}"
     DB_FILE="${DB_BACKUP_DIR}/production_db_${TIMESTAMP}.sql"
     
-    # Get production DB credentials
-    read -p "Enter production DB hostname: " PROD_DB_HOST
-    read -p "Enter production DB name: " PROD_DB_NAME
-    read -p "Enter production DB username: " PROD_DB_USER
-    read -s -p "Enter production DB password: " PROD_DB_PASS
-    echo
+    # Get production DB credentials from config or prompt
+    if [ -z "$PROD_DB_HOST" ] || [ -z "$PROD_DB_NAME" ] || [ -z "$PROD_DB_USER" ] || [ -z "$PROD_DB_PASS" ]; then
+        print_warning "Production DB credentials not in config, prompting..."
+        read -p "Enter production DB hostname: " PROD_DB_HOST
+        read -p "Enter production DB name: " PROD_DB_NAME
+        read -p "Enter production DB username: " PROD_DB_USER
+        read -s -p "Enter production DB password: " PROD_DB_PASS
+        echo
+    fi
     
     if is_running_on_production; then
         # Running on production server directly
@@ -184,13 +197,7 @@ import_database() {
     fi
     source "${PROJECT_DIR}/.env"
     
-    print_warning "This will overwrite your local database!"
-    read -p "Are you sure? (y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Database import cancelled"
-        return 1
-    fi
+    print_warning "Importing database - this will overwrite your local database!"
     
     # Import database
     if [[ "$DB_FILE" == *.gz ]]; then
@@ -247,12 +254,16 @@ pull_uploaded_files() {
         return 0
     fi
     
-    if [ "$SYNC_UPLOADED_FILES" = "auto" ]; then
-        SYNC_YES="y"
-    else
+    if [ "$SYNC_UPLOADED_FILES" = "skip" ]; then
+        echo "Skipping uploaded files sync (SYNC_UPLOADED_FILES=skip)"
+        return 0
+    elif [ "$SYNC_UPLOADED_FILES" = "ask" ]; then
         read -p "Do you want to sync uploaded files (images, documents) from production? (y/n) " -n 1 -r
         echo
         SYNC_YES="$REPLY"
+    else
+        # auto
+        SYNC_YES="y"
     fi
     
     if [[ $SYNC_YES =~ ^[Yy]$ ]]; then
@@ -456,11 +467,11 @@ main() {
     
     # Export and import database (only if running from dev)
     if ! is_running_on_production; then
-        read -p "Do you want to sync the database? (y/n) " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if [ "$SYNC_DATABASE" = "auto" ]; then
             DB_FILE=$(export_production_database)
             import_database "${DB_FILE}"
+        else
+            echo "Database sync disabled (SYNC_DATABASE=skip)"
         fi
         
         # Clear caches
