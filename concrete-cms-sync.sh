@@ -256,15 +256,13 @@ select_snapshot_tag() {
     # Show all tags (not just snapshot-*) to support both old and new formats
     local tags=$(git tag -l | sort -r | head -20)  # Show last 20 tags
     
-    # Debug: show what tags were found
-    if [ -n "$tags" ]; then
-        echo "  Found $(echo "$tags" | wc -l | tr -d ' ') tag(s)" >&2
-    fi
-    
     cd - >/dev/null 2>&1
-    rm -rf "${temp_dir}"
     
-    if [ -z "$tags" ]; then
+    # Check if tags were found (handle both empty and newline-only cases)
+    local tag_count=$(echo "$tags" | grep -v '^$' | wc -l | tr -d ' ')
+    
+    if [ -z "$tags" ] || [ "$tag_count" -eq 0 ]; then
+        rm -rf "${temp_dir}"
         echo ""
         echo "No snapshot tags found in repository." >&2
         echo ""
@@ -280,30 +278,88 @@ select_snapshot_tag() {
         return 0
     fi
     
-    # Display tags to user
-    echo ""
-    echo "Available snapshots:"
-    echo "  0) latest (most recent from branch)"
-    local count=1
-    for tag in $tags; do
-        echo "  ${count}) ${tag}"
-        count=$((count + 1))
-    done
-    echo ""
+    rm -rf "${temp_dir}"
     
-    # Prompt user for selection
+    # Convert tags to array for proper iteration
+    local tag_array=()
+    while IFS= read -r tag; do
+        if [ -n "$tag" ]; then
+            tag_array+=("$tag")
+        fi
+    done <<< "$tags"
+    
+    local tag_count=${#tag_array[@]}
+    local page_size=10
+    local current_page=0
+    local start_idx=0
+    local end_idx=$((page_size - 1))
+    
+    # Display tags with paging
     while true; do
+        echo ""
+        echo "Available snapshots:"
+        echo "  0) latest (most recent from branch)"
+        
+        # Display current page of tags
+        local display_count=0
+        for ((i=$start_idx; i<=$end_idx && i<$tag_count; i++)); do
+            local tag_num=$((i + 1))
+            echo "  ${tag_num}) ${tag_array[$i]}"
+            display_count=$((display_count + 1))
+        done
+        
+        # Show paging info
+        local total_pages=$(( (tag_count + page_size - 1) / page_size ))
+        local current_page_num=$((current_page + 1))
+        if [ $total_pages -gt 1 ]; then
+            echo ""
+            echo "Page ${current_page_num} of ${total_pages} (showing tags $((start_idx + 1))-$((end_idx + 1 > tag_count ? tag_count : end_idx + 1)) of ${tag_count})"
+            if [ $end_idx -lt $((tag_count - 1)) ]; then
+                echo "Press Enter to see more tags, or enter a number to select"
+            else
+                echo "Press Enter to go back to first page, or enter a number to select"
+            fi
+        fi
+        echo ""
+        
+        # Prompt user
         read -p "Select snapshot to use (0 for latest, or number): " selection
+        
+        # Handle empty input (paging)
+        if [ -z "$selection" ]; then
+            if [ $end_idx -lt $((tag_count - 1)) ]; then
+                # Show next page
+                current_page=$((current_page + 1))
+                start_idx=$((start_idx + page_size))
+                end_idx=$((end_idx + page_size))
+                if [ $end_idx -ge $tag_count ]; then
+                    end_idx=$((tag_count - 1))
+                fi
+                continue
+            else
+                # Wrap around to first page
+                current_page=0
+                start_idx=0
+                end_idx=$((page_size - 1))
+                continue
+            fi
+        fi
+        
+        # Handle selection
         if [ "$selection" = "0" ] || [ "$selection" = "latest" ]; then
             echo "latest"
             return 0
-        elif [ -n "$selection" ] && [ "$selection" -ge 1 ] && [ "$selection" -le "$(echo "$tags" | wc -l | tr -d ' ')" ] 2>/dev/null; then
-            # Get the selected tag
-            local selected_tag=$(echo "$tags" | sed -n "${selection}p")
-            echo "$selected_tag"
-            return 0
+        elif [ -n "$selection" ] && [ "$selection" -ge 1 ] && [ "$selection" -le "$tag_count" ] 2>/dev/null; then
+            # Get the selected tag from array (array is 0-indexed, selection is 1-indexed)
+            local selected_tag="${tag_array[$((selection - 1))]}"
+            if [ -n "$selected_tag" ]; then
+                echo "$selected_tag"
+                return 0
+            else
+                print_error "Could not find tag at position ${selection}"
+            fi
         else
-            print_error "Invalid selection. Please enter 0 for latest or a number from the list."
+            print_error "Invalid selection. Please enter 0 for latest or a number from 1 to ${tag_count}."
         fi
     done
 }
