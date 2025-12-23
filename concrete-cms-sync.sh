@@ -468,6 +468,9 @@ check_prerequisites() {
     
     command -v mysql >/dev/null 2>&1 || { print_error "mysql client is required but not installed"; exit 1; }
     
+    # rsync is required for efficient file syncing
+    command -v rsync >/dev/null 2>&1 || { print_error "rsync is required but not installed"; exit 1; }
+    
     # FILES_GIT_REPO is required (we use Git exclusively)
     if [ -z "$FILES_GIT_REPO" ]; then
         print_error "FILES_GIT_REPO must be set in .deployment-config"
@@ -850,52 +853,49 @@ pull_uploaded_files() {
                 echo "  Using snapshot tag: ${selected_tag}"
             fi
             
-            # Copy to local files directory
+            # Copy to local files directory using rsync
             # Ensure the target directory exists
             mkdir -p "${PROJECT_DIR}/public/application/files"
             
-            # Copy all files and directories, preserving structure
+            # Use rsync to copy files and show statistics
             # Exclude database and cache directories (they're stored separately in Git)
             if [ -n "$(ls -A "${FILES_TEMP_DIR}" 2>/dev/null)" ]; then
-                # Copy contents, excluding database and cache directories
-                for item in "${FILES_TEMP_DIR}"/*; do
-                    if [ -e "$item" ]; then
-                        item_name=$(basename "$item")
-                        # Skip database and cache directories (they're synced separately)
-                        if [ "$item_name" != "database" ] && [ "$item_name" != "cache" ]; then
-                            cp -R "$item" "${PROJECT_DIR}/public/application/files/" 2>/dev/null || {
-                                print_warning "Failed to copy: $item_name"
-                            }
-                        fi
-                    fi
-                done
+                echo "  Syncing files with rsync..."
+                # Use rsync with stats to show what's being copied
+                # -a: archive mode (preserves permissions, timestamps, etc.)
+                # -v: verbose
+                # --stats: show transfer statistics
+                # --exclude: exclude database and cache directories
+                rsync_output=$(rsync -av --stats \
+                    --exclude='database' \
+                    --exclude='cache' \
+                    --exclude='.git' \
+                    "${FILES_TEMP_DIR}/" "${PROJECT_DIR}/public/application/files/" 2>&1)
                 
-                # Also copy hidden files/directories (except .git)
-                for item in "${FILES_TEMP_DIR}"/.[^.]*; do
-                    if [ -e "$item" ]; then
-                        item_name=$(basename "$item")
-                        if [ "$item_name" != ".git" ] && [ "$item_name" != ".gitkeep" ]; then
-                            cp -R "$item" "${PROJECT_DIR}/public/application/files/" 2>/dev/null || true
-                        fi
-                    fi
-                done
+                # Extract statistics from rsync output (handle different rsync versions)
+                # Try to get number of files transferred/changed
+                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+                files_created=$(echo "$rsync_output" | grep -E "Number of created files" | grep -oE "[0-9]+" | head -1 || echo "0")
+                files_deleted=$(echo "$rsync_output" | grep -E "Number of deleted files" | grep -oE "[0-9]+" | head -1 || echo "0")
                 
-                # Verify some files were copied and set proper permissions
-                FILE_COUNT=$(find "${PROJECT_DIR}/public/application/files" -type f 2>/dev/null | wc -l | tr -d ' ')
-                if [ "$FILE_COUNT" -eq 0 ]; then
-                    print_warning "No files found after copy - checking source directory"
-                    echo "Source directory contents:"
-                    ls -la "${FILES_TEMP_DIR}" | head -20
-                    echo "Target directory contents:"
-                    ls -la "${PROJECT_DIR}/public/application/files" | head -20
+                # Show summary
+                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                    echo "  Files synced: ${files_transferred} file(s) transferred"
+                    if [ -n "$files_created" ] && [ "$files_created" != "0" ] && [ "$files_created" != "" ]; then
+                        echo "  New files: ${files_created} file(s) created"
+                    fi
+                    if [ -n "$files_deleted" ] && [ "$files_deleted" != "0" ] && [ "$files_deleted" != "" ]; then
+                        echo "  Removed files: ${files_deleted} file(s) deleted"
+                    fi
                 else
-                    echo "  Copied ${FILE_COUNT} files to ${PROJECT_DIR}/public/application/files"
-                    # Set proper permissions (readable by web server)
-                    chmod -R u+rw "${PROJECT_DIR}/public/application/files" 2>/dev/null || true
-                    find "${PROJECT_DIR}/public/application/files" -type d -exec chmod 755 {} \; 2>/dev/null || true
-                    find "${PROJECT_DIR}/public/application/files" -type f -exec chmod 644 {} \; 2>/dev/null || true
-                    echo "  Set proper file permissions"
+                    echo "  No files needed to be synced (all files are up to date)"
                 fi
+                
+                # Set proper permissions (readable by web server)
+                chmod -R u+rw "${PROJECT_DIR}/public/application/files" 2>/dev/null || true
+                find "${PROJECT_DIR}/public/application/files" -type d -exec chmod 755 {} \; 2>/dev/null || true
+                find "${PROJECT_DIR}/public/application/files" -type f -exec chmod 644 {} \; 2>/dev/null || true
+                echo "  Set proper file permissions"
             else
                 print_warning "No files found in Git repository to copy"
             fi
@@ -998,25 +998,56 @@ pull_config_files() {
             echo "  Using snapshot tag: ${selected_tag}"
         fi
         
-        # Copy config files to local site
+        # Copy config files to local site using rsync
+        local total_config_files=0
+        local total_config_changed=0
+        
         if [ -d "${CONFIG_TEMP_DIR}/config" ]; then
             mkdir -p "${PROJECT_DIR}/public/application/config"
-            cp -r "${CONFIG_TEMP_DIR}/config"/* "${PROJECT_DIR}/public/application/config/" 2>/dev/null || true
+            echo "  Syncing config files..."
+            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/config/" "${PROJECT_DIR}/public/application/config/" 2>&1)
+            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                total_config_files=$((total_config_files + files_transferred))
+                total_config_changed=$((total_config_changed + files_transferred))
+            fi
         fi
         if [ -d "${CONFIG_TEMP_DIR}/themes" ]; then
             mkdir -p "${PROJECT_DIR}/public/application/themes"
-            cp -r "${CONFIG_TEMP_DIR}/themes"/* "${PROJECT_DIR}/public/application/themes/" 2>/dev/null || true
+            echo "  Syncing themes..."
+            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/themes/" "${PROJECT_DIR}/public/application/themes/" 2>&1)
+            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                total_config_files=$((total_config_files + files_transferred))
+                total_config_changed=$((total_config_changed + files_transferred))
+            fi
         fi
         if [ -d "${CONFIG_TEMP_DIR}/blocks" ]; then
             mkdir -p "${PROJECT_DIR}/public/application/blocks"
-            cp -r "${CONFIG_TEMP_DIR}/blocks"/* "${PROJECT_DIR}/public/application/blocks/" 2>/dev/null || true
+            echo "  Syncing blocks..."
+            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/blocks/" "${PROJECT_DIR}/public/application/blocks/" 2>&1)
+            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                total_config_files=$((total_config_files + files_transferred))
+                total_config_changed=$((total_config_changed + files_transferred))
+            fi
         fi
         if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
             mkdir -p "${PROJECT_DIR}/public/application/packages"
-            cp -r "${CONFIG_TEMP_DIR}/packages"/* "${PROJECT_DIR}/public/application/packages/" 2>/dev/null || true
+            echo "  Syncing packages..."
+            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/packages/" "${PROJECT_DIR}/public/application/packages/" 2>&1)
+            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                total_config_files=$((total_config_files + files_transferred))
+                total_config_changed=$((total_config_changed + files_transferred))
+            fi
         fi
         
-        echo "✓ Config files synced from Git"
+        if [ "$total_config_changed" -gt 0 ]; then
+            echo "  ✓ Config files synced: ${total_config_changed} file(s) updated"
+        else
+            echo "  ✓ Config files are up to date (no changes needed)"
+        fi
     fi
 }
 
