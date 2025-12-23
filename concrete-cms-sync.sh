@@ -16,6 +16,9 @@ NC='\033[0m' # No Color
 
 # Configuration - EDIT THESE VALUES or use .deployment-config file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
+DB_TEMP_DIR="${SCRIPT_DIR}/.db-git-temp"
+CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Default values (can be overridden by .deployment-config or environment variables)
@@ -468,7 +471,6 @@ export_database_to_git() {
     echo "  User: ${DB_USERNAME}"
     
     # Create temp directory for Git operations
-    DB_TEMP_DIR="${SCRIPT_DIR}/.db-git-temp"
     if [ -d "${DB_TEMP_DIR}" ]; then
         rm -rf "${DB_TEMP_DIR}"
     fi
@@ -526,7 +528,6 @@ pull_database_from_git() {
     fi
     
     # Create temp directory for Git operations
-    DB_TEMP_DIR="${SCRIPT_DIR}/.db-git-temp"
     if [ -d "${DB_TEMP_DIR}" ]; then
         rm -rf "${DB_TEMP_DIR}"
     fi
@@ -729,8 +730,6 @@ pull_uploaded_files() {
         # Push or pull based on SYNC_DIRECTION
         if [ "$SYNC_DIRECTION" = "push" ]; then
             # Push mode: export files to Git
-            FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
-            
             # Clean up and recreate temp directory to avoid conflicts
             if [ -d "${FILES_TEMP_DIR}" ]; then
                 echo "Cleaning up existing temp directory..."
@@ -774,7 +773,6 @@ pull_uploaded_files() {
             # Pull direction - pull files from Git
             local selected_tag="${1:-latest}"  # Tag to checkout, or "latest" for branch HEAD
             echo "Pulling files from Git..."
-            FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
             
             # Clean up and recreate to ensure clean state
             if [ -d "${FILES_TEMP_DIR}" ]; then
@@ -868,8 +866,6 @@ pull_config_files() {
         # Push direction - push config files to Git
         echo "Pushing config files to Git..."
         
-        CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
-        
         # Clean up and recreate temp directory
         if [ -d "${CONFIG_TEMP_DIR}" ]; then
             rm -rf "${CONFIG_TEMP_DIR}"
@@ -919,8 +915,6 @@ pull_config_files() {
         # Pull direction - pull config files from Git
         local selected_tag="${1:-latest}"  # Tag to checkout, or "latest" for branch HEAD
         echo "Pulling config files from Git..."
-        
-        CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
         
         # Clean up and recreate
         if [ -d "${CONFIG_TEMP_DIR}" ]; then
