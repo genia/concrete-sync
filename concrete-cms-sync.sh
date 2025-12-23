@@ -320,12 +320,6 @@ select_snapshot_tag() {
     # Re-check array count after directory change (arrays should persist, but verify)
     tag_count=${#tag_array[@]}
     
-    # Debug: show array contents after directory change
-    echo "  Debug: After cd back, tag_count=${tag_count}" >&2
-    for idx in "${!tag_array[@]}"; do
-        echo "  Debug: tag_array[${idx}]='${tag_array[$idx]}'" >&2
-    done
-    
     if [ "$tag_count" -eq 0 ]; then
         rm -rf "${temp_dir}"
         echo ""
@@ -351,52 +345,40 @@ select_snapshot_tag() {
     local end_idx=$((page_size - 1))
     
     # Display tags with paging
+    # NOTE: All menu output goes to stderr since stdout is captured by the caller
     while true; do
-        echo ""
-        echo "Available snapshots:"
-        echo "  0) latest (most recent from branch)"
+        echo "" >&2
+        echo "Available snapshots:" >&2
+        echo "  0) latest (most recent from branch)" >&2
         
         # Display current page of tags
         local display_count=0
-        echo "  Debug: Loop params - start_idx=$start_idx, end_idx=$end_idx, tag_count=$tag_count" >&2
         for ((i=$start_idx; i<=$end_idx && i<$tag_count; i++)); do
             local tag_num=$((i + 1))
             local tag_value="${tag_array[$i]}"
-            echo "  Debug: Loop iteration i=$i, tag_value='${tag_value}'" >&2
             if [ -n "$tag_value" ]; then
-                echo "  ${tag_num}) ${tag_value}"
+                echo "  ${tag_num}) ${tag_value}" >&2
                 display_count=$((display_count + 1))
-            else
-                echo "  Debug: tag_array[$i] is empty (tag_num=$tag_num)" >&2
             fi
         done
-        
-        # If no tags were displayed but we have tags, show debug info
-        if [ $display_count -eq 0 ] && [ $tag_count -gt 0 ]; then
-            echo "  Debug: No tags displayed but tag_count=$tag_count" >&2
-            echo "  Debug: start_idx=$start_idx, end_idx=$end_idx" >&2
-            echo "  Debug: Array contents:" >&2
-            for idx in "${!tag_array[@]}"; do
-                echo "    tag_array[$idx]='${tag_array[$idx]}'" >&2
-            done
-        fi
         
         # Show paging info
         local total_pages=$(( (tag_count + page_size - 1) / page_size ))
         local current_page_num=$((current_page + 1))
         if [ $total_pages -gt 1 ]; then
-            echo ""
-            echo "Page ${current_page_num} of ${total_pages} (showing tags $((start_idx + 1))-$((end_idx + 1 > tag_count ? tag_count : end_idx + 1)) of ${tag_count})"
+            echo "" >&2
+            echo "Page ${current_page_num} of ${total_pages} (showing tags $((start_idx + 1))-$((end_idx + 1 > tag_count ? tag_count : end_idx + 1)) of ${tag_count})" >&2
             if [ $end_idx -lt $((tag_count - 1)) ]; then
-                echo "Press Enter to see more tags, or enter a number to select"
+                echo "Press Enter to see more tags, or enter a number to select" >&2
             else
-                echo "Press Enter to go back to first page, or enter a number to select"
+                echo "Press Enter to go back to first page, or enter a number to select" >&2
             fi
         fi
-        echo ""
+        echo "" >&2
         
-        # Prompt user
-        read -p "Select snapshot to use (0 for latest, or number): " selection
+        # Prompt user (prompt to stderr, read from stdin/terminal)
+        echo -n "Select snapshot to use (0 for latest, or number): " >&2
+        read selection
         
         # Handle empty input (paging)
         if [ -z "$selection" ]; then
