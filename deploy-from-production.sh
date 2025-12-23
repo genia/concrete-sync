@@ -27,10 +27,9 @@ UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
 FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 SYNC_DATABASE="auto"  # Options: auto, skip
-PROD_DB_HOST=""  # Production database hostname (from config or env)
-PROD_DB_NAME=""  # Production database name (from config or env)
-PROD_DB_USER=""  # Production database username (from config or env)
-PROD_DB_PASS=""  # Production database password (from config or env)
+# DB credentials will be loaded from .env or config
+# On dev: uses local dev database credentials
+# On production: uses production database credentials
 
 # Load configuration from .deployment-config if it exists
 CONFIG_FILE="${SCRIPT_DIR}/.deployment-config"
@@ -48,10 +47,7 @@ UPLOADED_FILES_METHOD="${UPLOADED_FILES_METHOD:-git}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
 SYNC_DATABASE="${SYNC_DATABASE:-auto}"
-PROD_DB_HOST="${PROD_DB_HOST:-}"
-PROD_DB_NAME="${PROD_DB_NAME:-}"
-PROD_DB_USER="${PROD_DB_USER:-}"
-PROD_DB_PASS="${PROD_DB_PASS:-}"
+# DB credentials loaded from .env file (required)
 
 # Set PROJECT_DIR to SITE_PATH (the actual site location)
 # For backwards compatibility, if SITE_PATH not set but PROJECT_DIR is, use that
@@ -143,9 +139,9 @@ check_prerequisites() {
         
         # Only require SSH tools if we need them (not needed for Git method file sync)
         # But we might need them for database export, so check based on method
-        if [ "$SYNC_DATABASE" = "auto" ] && [ -z "$PROD_DB_HOST" ]; then
-            # Will need SSH to export database if DB credentials not set
-            command -v ssh >/dev/null 2>&1 || { print_error "ssh is required for database export"; exit 1; }
+        if [ "$SYNC_DATABASE" = "auto" ]; then
+            # Will need SSH to export database from production
+            command -v ssh >/dev/null 2>&1 || { print_error "ssh is required for database export from production"; exit 1; }
         fi
         if [ "$UPLOADED_FILES_METHOD" != "git" ]; then
             # Need SSH tools for zip/rsync methods
@@ -154,10 +150,8 @@ check_prerequisites() {
             command -v scp >/dev/null 2>&1 || { print_error "scp is required but not installed"; exit 1; }
         elif [ "$SYNC_DATABASE" = "auto" ]; then
             # For Git method, only need SSH if we're syncing database and DB isn't directly accessible
-            # If PROD_DB_HOST is set, we might be able to connect directly (no SSH needed)
-            # But if not set, we'll need SSH to run mysqldump on production server
-            # For now, we'll only require SSH if DB export is needed and we're using SSH method
-            command -v ssh >/dev/null 2>&1 || { print_warning "ssh not available - database export from production may require direct DB access"; }
+            # Need SSH to export database from production server
+            command -v ssh >/dev/null 2>&1 || { print_warning "ssh not available - database export from production requires SSH"; }
         fi
     else
         # REMOTE_HOST not set - check if we're on production
@@ -176,9 +170,9 @@ check_prerequisites() {
                 print_error "Set in .deployment-config or as environment variable:"
                 print_error "  REMOTE_HOST=server.com"
                 exit 1
-            elif [ "$SYNC_DATABASE" = "auto" ] && [ -z "$PROD_DB_HOST" ]; then
-                print_warning "REMOTE_HOST not set - assuming production database is directly accessible"
-                print_warning "Or production files were already pushed to Git from production server"
+            elif [ "$SYNC_DATABASE" = "auto" ]; then
+                print_warning "REMOTE_HOST not set - database export will require REMOTE_HOST or direct DB access"
+                print_warning "Or production files/database were already pushed from production server"
             fi
             # For Git method without REMOTE_HOST, assume we're just pulling from Git
             # Production path doesn't matter since we're not accessing it
@@ -186,8 +180,20 @@ check_prerequisites() {
         fi
     fi
     
-    if [ ! -f "${PROJECT_DIR}/.env" ] && ! is_running_on_production; then
-        print_error ".env file not found at ${PROJECT_DIR}/.env (required for local dev database)"
+    # Load database credentials from .env (required)
+    if [ ! -f "${PROJECT_DIR}/.env" ]; then
+        print_error ".env file not found at ${PROJECT_DIR}/.env"
+        print_error ".env file is required for database credentials"
+        exit 1
+    fi
+    
+    # Source .env to get DB credentials (will be used based on where script is running)
+    source "${PROJECT_DIR}/.env"
+    
+    # Validate DB credentials are present
+    if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
+        print_error "Database credentials not found in .env file"
+        print_error "Required: DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD"
         exit 1
     fi
     
@@ -201,29 +207,31 @@ export_production_database() {
     mkdir -p "${DB_BACKUP_DIR}"
     DB_FILE="${DB_BACKUP_DIR}/production_db_${TIMESTAMP}.sql"
     
-    # Get production DB credentials from config or prompt
-    if [ -z "$PROD_DB_HOST" ] || [ -z "$PROD_DB_NAME" ] || [ -z "$PROD_DB_USER" ] || [ -z "$PROD_DB_PASS" ]; then
-        print_warning "Production DB credentials not in config, prompting..."
-        read -p "Enter production DB hostname: " PROD_DB_HOST
-        read -p "Enter production DB name: " PROD_DB_NAME
-        read -p "Enter production DB username: " PROD_DB_USER
-        read -s -p "Enter production DB password: " PROD_DB_PASS
-        echo
-    fi
+    # DB credentials are already loaded from .env in check_prerequisites
+    # On production: these are production DB credentials
+    # On dev: these would be dev DB credentials (but we need production, so use SSH)
     
-    # Determine how to export database
+    echo "Exporting database..."
+    
     if is_running_on_production; then
-        # Running on production server directly
-        mysqldump -h"${PROD_DB_HOST}" -u"${PROD_DB_USER}" -p"${PROD_DB_PASS}" "${PROD_DB_NAME}" | gzip > "${DB_FILE}.gz"
+        # Running on production server - use local DB credentials from .env
+        echo "  Host: ${DB_HOSTNAME}"
+        echo "  Database: ${DB_DATABASE}"
+        echo "  User: ${DB_USERNAME}"
+        mysqldump -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}.gz"
     elif [ -n "$REMOTE_HOST" ]; then
-        # Running from dev, export via SSH to production server
+        # Running from dev - need to export from production via SSH
+        # Production .env has production DB credentials
+        echo "  Connecting to production server: ${REMOTE_HOST}"
+        echo "  Will use production database credentials from production .env file"
         ssh "${REMOTE_HOST}" \
-            "mysqldump -h${PROD_DB_HOST} -u${PROD_DB_USER} -p${PROD_DB_PASS} ${PROD_DB_NAME}" \
+            "cd ${REMOTE_PATH} && [ -f .env ] && source .env && mysqldump -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}" \
             | gzip > "${DB_FILE}.gz"
     else
-        # No REMOTE_HOST - try direct database connection (if DB is accessible from dev)
-        print_warning "No REMOTE_HOST set - attempting direct database connection"
-        mysqldump -h"${PROD_DB_HOST}" -u"${PROD_DB_USER}" -p"${PROD_DB_PASS}" "${PROD_DB_NAME}" | gzip > "${DB_FILE}.gz"
+        # No REMOTE_HOST - cannot export from production without SSH access
+        print_error "Cannot export database from production without REMOTE_HOST"
+        print_error "Either set REMOTE_HOST in config or run this script on production server"
+        return 1
     fi
     
     echo "✓ Database exported from production to ${DB_FILE}.gz"
@@ -247,12 +255,8 @@ import_database() {
         return 1
     fi
     
-    # Load local DB config from .env
-    if [ ! -f "${PROJECT_DIR}/.env" ]; then
-        print_error ".env file not found (required for local dev database)"
-        return 1
-    fi
-    source "${PROJECT_DIR}/.env"
+    # DB credentials already loaded from .env in check_prerequisites
+    # These are the local dev database credentials
     
     print_warning "Importing database - this will overwrite your local database!"
     echo "  Source: ${DB_FILE}"

@@ -31,10 +31,9 @@ UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
 FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 SYNC_DATABASE="auto"  # Options: auto, skip
-PROD_DB_HOST=""  # Production database hostname (from config or env)
-PROD_DB_NAME=""  # Production database name (from config or env)
-PROD_DB_USER=""  # Production database username (from config or env)
-PROD_DB_PASS=""  # Production database password (from config or env)
+# DB credentials will be loaded from .env
+# On dev: uses local dev database credentials (for export)
+# Production DB credentials will be loaded from production .env via SSH
 
 # Load configuration from .deployment-config if it exists
 CONFIG_FILE="${SCRIPT_DIR}/.deployment-config"
@@ -52,10 +51,7 @@ UPLOADED_FILES_METHOD="${UPLOADED_FILES_METHOD:-git}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
 SYNC_DATABASE="${SYNC_DATABASE:-auto}"
-PROD_DB_HOST="${PROD_DB_HOST:-}"
-PROD_DB_NAME="${PROD_DB_NAME:-}"
-PROD_DB_USER="${PROD_DB_USER:-}"
-PROD_DB_PASS="${PROD_DB_PASS:-}"
+# DB credentials loaded from .env file (for local dev database)
 
 # Set PROJECT_DIR to SITE_PATH (the actual site location)
 # For backwards compatibility, if SITE_PATH not set but PROJECT_DIR is, use that
@@ -71,13 +67,7 @@ if [ -n "$REMOTE_USER" ] && [ -n "$REMOTE_HOST" ] && [[ ! "$REMOTE_HOST" == *"@"
     REMOTE_HOST="${REMOTE_USER}@${REMOTE_HOST}"
 fi
 
-# Database configuration (from .env)
-if [ ! -f "${PROJECT_DIR}/.env" ]; then
-    echo -e "${RED}Error: .env file not found${NC}"
-    exit 1
-fi
-
-source "${PROJECT_DIR}/.env"
+# Database configuration will be loaded in check_prerequisites after SITE_PATH is validated
 
 # Functions
 print_step() {
@@ -125,6 +115,22 @@ check_prerequisites() {
         print_error "REMOTE_HOST and REMOTE_PATH must be set"
         print_error "Set in .deployment-config or as environment variables:"
         print_error "  REMOTE_HOST=server.com REMOTE_PATH=/path/to/site"
+        exit 1
+    fi
+    
+    # Load database credentials from .env (for local dev database)
+    if [ ! -f "${PROJECT_DIR}/.env" ]; then
+        print_error ".env file not found at ${PROJECT_DIR}/.env"
+        print_error ".env file is required for database credentials"
+        exit 1
+    fi
+    
+    source "${PROJECT_DIR}/.env"
+    
+    # Validate DB credentials are present
+    if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
+        print_error "Database credentials not found in .env file"
+        print_error "Required: DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD"
         exit 1
     fi
     
@@ -375,29 +381,21 @@ import_database() {
     
     DB_FILE="$1"
     
-    # Get production DB credentials from config or prompt
-    if [ -z "$PROD_DB_HOST" ] || [ -z "$PROD_DB_NAME" ] || [ -z "$PROD_DB_USER" ] || [ -z "$PROD_DB_PASS" ]; then
-        print_warning "Production DB credentials not in config, prompting..."
-        read -p "Enter production DB hostname: " PROD_DB_HOST
-        read -p "Enter production DB name: " PROD_DB_NAME
-        read -p "Enter production DB username: " PROD_DB_USER
-        read -s -p "Enter production DB password: " PROD_DB_PASS
-        echo
-    fi
-    
+    # Production DB credentials are in production .env file
+    # We'll load them via SSH when importing
     echo "Importing database..."
     echo "  Source: ${DB_FILE}"
-    echo "  Target: ${PROD_DB_HOST}/${PROD_DB_NAME}"
-    echo "  User: ${PROD_DB_USER}"
+    echo "  Target: Production database (credentials from production .env)"
     echo "  Server: ${REMOTE_HOST}"
     
     # Transfer and import database
+    # Production .env has production DB credentials
     if [[ "$DB_FILE" == *.gz ]]; then
         gunzip -c "${DB_FILE}" | ssh "${REMOTE_HOST}" \
-            "mysql -h${PROD_DB_HOST} -u${PROD_DB_USER} -p${PROD_DB_PASS} ${PROD_DB_NAME}"
+            "cd ${REMOTE_PATH} && [ -f .env ] && source .env && mysql -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}"
     else
         ssh "${REMOTE_HOST}" \
-            "mysql -h${PROD_DB_HOST} -u${PROD_DB_USER} -p${PROD_DB_PASS} ${PROD_DB_NAME}" < "${DB_FILE}"
+            "cd ${REMOTE_PATH} && [ -f .env ] && source .env && mysql -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}" < "${DB_FILE}"
     fi
     
     echo "✓ Database imported to production"

@@ -11,12 +11,15 @@ REMOTE_HOST=""  # e.g., user@example.com
 REMOTE_PATH=""  # e.g., /var/www/html (path to site on production server)
 REMOTE_USER=""  # Optional: SSH user (will be combined with REMOTE_HOST if not included)
 
-# Production database credentials (for automatic database sync)
+# Database credentials (for the database on THIS host)
+# On dev: these access your local development database
+# On production: these access the production database
 # WARNING: This file may contain sensitive information - do not commit to Git!
-PROD_DB_HOST=""  # Production database hostname
-PROD_DB_NAME=""  # Production database name
-PROD_DB_USER=""  # Production database username
-PROD_DB_PASS=""  # Production database password (consider using environment variable instead)
+# Note: If not set here, the script will use values from .env file
+# DB_HOSTNAME=""  # Database hostname (e.g., localhost or mysql.example.com)
+# DB_DATABASE=""  # Database name
+# DB_USERNAME=""  # Database username
+# DB_PASSWORD=""  # Database password (consider using environment variable instead)
 
 # File syncing configuration (for Git method)
 FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
