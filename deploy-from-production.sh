@@ -705,14 +705,6 @@ install_dependencies() {
     # Install Composer dependencies
     ${COMPOSER_CMD} install
     
-    # Install npm dependencies if needed
-    if [ -f "${PROJECT_DIR}/package.json" ]; then
-        if [ ! -d "${PROJECT_DIR}/node_modules" ]; then
-            npm install
-        fi
-        npm run dev
-    fi
-    
     echo "✓ Dependencies installed"
 }
 

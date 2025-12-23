@@ -179,22 +179,6 @@ export_database() {
     echo "${DB_FILE}"
 }
 
-# Build assets
-build_assets() {
-    print_step "Building assets..."
-    
-    # Change to project directory (important: may have been in temp directories)
-    cd "${PROJECT_DIR}" || { print_error "Cannot change to PROJECT_DIR: ${PROJECT_DIR}"; return 1; }
-    
-    if [ ! -d "${PROJECT_DIR}/node_modules" ]; then
-        echo "Installing npm dependencies..."
-        npm install
-    fi
-    
-    npm run prod
-    
-    echo "✓ Assets built"
-}
 
 # Create deployment package
 create_deployment_package() {
@@ -443,9 +427,6 @@ main() {
     
     # Export database
     DB_FILE=$(export_database)
-    
-    # Build assets
-    build_assets
     
     # Deploy files
     deploy_files
