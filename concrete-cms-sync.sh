@@ -197,7 +197,7 @@ setup_git_credentials() {
 # Create and push a Git tag for this snapshot
 create_snapshot_tag() {
     local tag_type="${1:-sync}"  # db, files, config, or sync (default)
-    local timestamp=$(date +%Y-%m-%d_%H:%M:%S)
+    local timestamp=$(date +%Y-%m-%d_%H-%M-%S)
     local tag_name="${tag_type}-${timestamp}"
     
     # Create the tag (suppress output)
