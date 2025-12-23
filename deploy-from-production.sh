@@ -695,6 +695,108 @@ EOF
     fi
 }
 
+# Pull config files from production via Git
+# This syncs Concrete CMS configuration files (config/, themes/, blocks/, packages/, etc.)
+pull_config_files() {
+    print_step "Pulling config files from production via Git..."
+    
+    if [ -z "$FILES_GIT_REPO" ]; then
+        echo "FILES_GIT_REPO not set - skipping config file sync via Git"
+        return 0
+    fi
+    
+    if is_running_on_production; then
+        # Running on production - push config files to Git
+        echo "Pushing config files from production to Git..."
+        
+        CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
+        
+        # Clean up and recreate temp directory
+        if [ -d "${CONFIG_TEMP_DIR}" ]; then
+            rm -rf "${CONFIG_TEMP_DIR}"
+        fi
+        
+        mkdir -p "${CONFIG_TEMP_DIR}/config"
+        cd "${CONFIG_TEMP_DIR}"
+        git init
+        git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+        
+        # Try to fetch existing branch
+        git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
+        if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
+            git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+        else
+            git checkout -b "${FILES_GIT_BRANCH}"
+        fi
+        
+        # Copy config files from production site
+        # Sync key Concrete CMS directories
+        if [ -d "${PROD_PATH}/public/application/config" ]; then
+            cp -r "${PROD_PATH}/public/application/config"/* "${CONFIG_TEMP_DIR}/config/" 2>/dev/null || true
+        fi
+        if [ -d "${PROD_PATH}/public/application/themes" ]; then
+            cp -r "${PROD_PATH}/public/application/themes" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+        fi
+        if [ -d "${PROD_PATH}/public/application/blocks" ]; then
+            cp -r "${PROD_PATH}/public/application/blocks" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+        fi
+        if [ -d "${PROD_PATH}/public/application/packages" ]; then
+            cp -r "${PROD_PATH}/public/application/packages" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+        fi
+        
+        # Commit and push
+        git add -A
+        if ! git diff --staged --quiet; then
+            git commit -m "Sync config files from production $(date +%Y-%m-%d\ %H:%M:%S)" || true
+            if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
+                git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
+            fi
+            git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
+            echo "✓ Config files pushed to Git"
+        else
+            echo "No config file changes to sync"
+        fi
+    else
+        # Running from dev - pull config files from Git
+        echo "Pulling config files from Git to local development..."
+        
+        CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
+        
+        # Clean up and recreate
+        if [ -d "${CONFIG_TEMP_DIR}" ]; then
+            rm -rf "${CONFIG_TEMP_DIR}"
+        fi
+        
+        mkdir -p "${CONFIG_TEMP_DIR}"
+        cd "${CONFIG_TEMP_DIR}"
+        git init
+        git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+        
+        git fetch origin "${FILES_GIT_BRANCH}"
+        git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+        
+        # Copy config files to local site
+        if [ -d "${CONFIG_TEMP_DIR}/config" ]; then
+            mkdir -p "${PROJECT_DIR}/public/application/config"
+            cp -r "${CONFIG_TEMP_DIR}/config"/* "${PROJECT_DIR}/public/application/config/" 2>/dev/null || true
+        fi
+        if [ -d "${CONFIG_TEMP_DIR}/themes" ]; then
+            mkdir -p "${PROJECT_DIR}/public/application/themes"
+            cp -r "${CONFIG_TEMP_DIR}/themes"/* "${PROJECT_DIR}/public/application/themes/" 2>/dev/null || true
+        fi
+        if [ -d "${CONFIG_TEMP_DIR}/blocks" ]; then
+            mkdir -p "${PROJECT_DIR}/public/application/blocks"
+            cp -r "${CONFIG_TEMP_DIR}/blocks"/* "${PROJECT_DIR}/public/application/blocks/" 2>/dev/null || true
+        fi
+        if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
+            mkdir -p "${PROJECT_DIR}/public/application/packages"
+            cp -r "${CONFIG_TEMP_DIR}/packages"/* "${PROJECT_DIR}/public/application/packages/" 2>/dev/null || true
+        fi
+        
+        echo "✓ Config files synced from Git"
+    fi
+}
+
 # Install dependencies
 install_dependencies() {
     print_step "Installing dependencies..."
@@ -735,6 +837,10 @@ main() {
         pull_files
     elif ! is_running_on_production && [ -z "$REMOTE_HOST" ]; then
         echo "Skipping rsync file pull (REMOTE_HOST not set - using Git method for files)"
+        # Pull config files via Git when using Git method
+        if [ "$UPLOADED_FILES_METHOD" = "git" ] && [ -n "$FILES_GIT_REPO" ]; then
+            pull_config_files
+        fi
     fi
     
     # Optionally pull/push uploaded files

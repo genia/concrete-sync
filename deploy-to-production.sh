@@ -349,6 +349,109 @@ EOF
     fi
 }
 
+# Deploy config files via Git
+# This syncs Concrete CMS configuration files (config/, themes/, blocks/, packages/, etc.)
+deploy_config_files() {
+    print_step "Deploying config files via Git..."
+    
+    if [ -z "$FILES_GIT_REPO" ]; then
+        echo "FILES_GIT_REPO not set - skipping config file sync via Git"
+        return 0
+    fi
+    
+    if [ "$UPLOADED_FILES_METHOD" != "git" ]; then
+        echo "Config files only sync via Git method (UPLOADED_FILES_METHOD=git required)"
+        return 0
+    fi
+    
+    echo "Pushing config files to Git..."
+    
+    CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
+    
+    # Clean up and recreate temp directory
+    if [ -d "${CONFIG_TEMP_DIR}" ]; then
+        rm -rf "${CONFIG_TEMP_DIR}"
+    fi
+    
+    mkdir -p "${CONFIG_TEMP_DIR}/config"
+    cd "${CONFIG_TEMP_DIR}"
+    git init
+    git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+    
+    # Try to fetch existing branch
+    git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
+    if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
+        git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+    else
+        git checkout -b "${FILES_GIT_BRANCH}"
+    fi
+    
+    # Copy config files from dev site
+    if [ -d "${PROJECT_DIR}/public/application/config" ]; then
+        cp -r "${PROJECT_DIR}/public/application/config"/* "${CONFIG_TEMP_DIR}/config/" 2>/dev/null || true
+    fi
+    if [ -d "${PROJECT_DIR}/public/application/themes" ]; then
+        cp -r "${PROJECT_DIR}/public/application/themes" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+    fi
+    if [ -d "${PROJECT_DIR}/public/application/blocks" ]; then
+        cp -r "${PROJECT_DIR}/public/application/blocks" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+    fi
+    if [ -d "${PROJECT_DIR}/public/application/packages" ]; then
+        cp -r "${PROJECT_DIR}/public/application/packages" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+    fi
+    
+    # Commit and push
+    git add -A
+    if ! git diff --staged --quiet; then
+        git commit -m "Sync config files $(date +%Y-%m-%d\ %H:%M:%S)" || true
+        if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
+            git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
+        fi
+        git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
+        echo "✓ Config files pushed to Git"
+    else
+        echo "No config file changes to sync"
+    fi
+    
+    # Pull on remote server
+    echo "Pulling config files on production server..."
+    ssh "${REMOTE_HOST}" << EOF
+        cd ${REMOTE_PATH}
+        TEMP_DIR="\$HOME/.concrete-sync-config-temp"
+        if [ ! -d "\${TEMP_DIR}" ]; then
+            mkdir -p "\${TEMP_DIR}"
+            cd "\${TEMP_DIR}"
+            git init
+            git remote add origin ${FILES_GIT_REPO} 2>/dev/null || git remote set-url origin ${FILES_GIT_REPO}
+        else
+            cd "\${TEMP_DIR}"
+        fi
+        git fetch origin ${FILES_GIT_BRANCH}
+        git reset --hard origin/${FILES_GIT_BRANCH}
+        
+        # Copy config files to production site
+        if [ -d "config" ]; then
+            mkdir -p ${REMOTE_PATH}/public/application/config
+            cp -r config/* ${REMOTE_PATH}/public/application/config/ 2>/dev/null || true
+        fi
+        if [ -d "themes" ]; then
+            mkdir -p ${REMOTE_PATH}/public/application/themes
+            cp -r themes/* ${REMOTE_PATH}/public/application/themes/ 2>/dev/null || true
+        fi
+        if [ -d "blocks" ]; then
+            mkdir -p ${REMOTE_PATH}/public/application/blocks
+            cp -r blocks/* ${REMOTE_PATH}/public/application/blocks/ 2>/dev/null || true
+        fi
+        if [ -d "packages" ]; then
+            mkdir -p ${REMOTE_PATH}/public/application/packages
+            cp -r packages/* ${REMOTE_PATH}/public/application/packages/ 2>/dev/null || true
+        fi
+        echo "✓ Config files synced from Git"
+EOF
+    
+    echo "✓ Config files synced via Git"
+}
+
 # Run post-deployment commands on remote
 post_deployment() {
     print_step "Running post-deployment tasks on server..."
@@ -430,6 +533,11 @@ main() {
     
     # Deploy files
     deploy_files
+    
+    # Deploy config files via Git (if using Git method)
+    if [ "$UPLOADED_FILES_METHOD" = "git" ] && [ -n "$FILES_GIT_REPO" ]; then
+        deploy_config_files
+    fi
     
     # Optionally deploy uploaded files
     deploy_uploaded_files
