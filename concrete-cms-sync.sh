@@ -73,7 +73,7 @@ print_step() {
 }
 
 print_warning() {
-    echo -e "${YELLOW}Warning: $1${NC}"
+    echo -e "${YELLOW}Warning: $1${NC}" >&2
 }
 
 print_error() {
@@ -221,7 +221,7 @@ select_snapshot_tag() {
     local repo_url="$1"
     local branch="${2:-main}"
     
-    print_step "Fetching available snapshot tags..."
+    print_step "Fetching available snapshot tags..." >&2
     
     # Create temp directory for fetching tags
     local temp_dir="${SCRIPT_DIR}/.tag-list-temp"
@@ -239,14 +239,15 @@ select_snapshot_tag() {
     git remote add origin "${repo_url}" >/dev/null 2>&1 || git remote set-url origin "${repo_url}" >/dev/null 2>&1
     
     # Fetch tags from remote (fetch both branch and tags)
-    echo "  Fetching tags from ${repo_url}..."
+    # All output except final selected tag goes to stderr
+    echo "  Fetching tags from ${repo_url}..." >&2
     # First fetch the branch
     git fetch origin "${branch}" >/dev/null 2>&1 || true
     # Then fetch all tags - use the correct refspec format with force flag
     if ! git fetch origin "+refs/tags/*:refs/tags/*" >/dev/null 2>&1; then
-        print_warning "Could not fetch tags from repository"
-        print_warning "Will use latest from branch instead"
-        echo "latest"  # Return "latest" as fallback
+        print_warning "Could not fetch tags from repository" >&2
+        print_warning "Will use latest from branch instead" >&2
+        echo "latest"  # Return "latest" as fallback (stdout only)
         cd - >/dev/null 2>&1
         rm -rf "${temp_dir}"
         return 0
@@ -306,9 +307,6 @@ select_snapshot_tag() {
             done < <(echo "$direct_tags")
             tag_count=${#tag_array[@]}
             echo "  After fallback, tag_count: ${tag_count}" >&2
-        else
-            echo "  Debug: tags variable: '${tags}'" >&2
-            echo "  Debug: direct_tags: '${direct_tags}'" >&2
         fi
     else
         echo "  Found ${tag_count} tag(s)" >&2
@@ -322,18 +320,19 @@ select_snapshot_tag() {
     
     if [ "$tag_count" -eq 0 ]; then
         rm -rf "${temp_dir}"
-        echo ""
+        echo "" >&2
         echo "No snapshot tags found in repository." >&2
-        echo ""
+        echo "" >&2
         echo "This could mean:" >&2
         echo "  - No snapshots have been pushed yet (run 'push' first to create tags)" >&2
         echo "  - Tags exist but weren't fetched (check repository access)" >&2
-        echo ""
+        echo "" >&2
         echo "Using latest from branch instead." >&2
-        echo ""
-        read -p "Press Enter to continue with latest, or Ctrl+C to cancel..." -r
-        echo ""
-        echo "latest"
+        echo "" >&2
+        echo -n "Press Enter to continue with latest, or Ctrl+C to cancel... " >&2
+        read -r
+        echo "" >&2
+        echo "latest"  # Only this goes to stdout
         return 0
     fi
     
