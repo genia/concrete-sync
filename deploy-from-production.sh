@@ -27,7 +27,7 @@ UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
 FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 SYNC_DATABASE="auto"  # Options: auto, skip
-# DB credentials will be loaded from .env or config
+# DB credentials will be loaded from .deployment-config
 # On dev: uses local dev database credentials
 # On production: uses production database credentials
 
@@ -47,7 +47,10 @@ UPLOADED_FILES_METHOD="${UPLOADED_FILES_METHOD:-git}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
 SYNC_DATABASE="${SYNC_DATABASE:-auto}"
-# DB credentials loaded from .env file (required)
+DB_HOSTNAME="${DB_HOSTNAME:-}"
+DB_DATABASE="${DB_DATABASE:-}"
+DB_USERNAME="${DB_USERNAME:-}"
+DB_PASSWORD="${DB_PASSWORD:-}"
 
 # Set PROJECT_DIR to SITE_PATH (the actual site location)
 # For backwards compatibility, if SITE_PATH not set but PROJECT_DIR is, use that
@@ -137,21 +140,21 @@ check_prerequisites() {
         echo "  Local site path: ${SITE_PATH}"
         echo "  Production server: ${REMOTE_HOST}:${PROD_PATH}"
         
-        # Only require SSH tools if we need them (not needed for Git method file sync)
-        # But we might need them for database export, so check based on method
-        if [ "$SYNC_DATABASE" = "auto" ]; then
-            # Will need SSH to export database from production
-            command -v ssh >/dev/null 2>&1 || { print_error "ssh is required for database export from production"; exit 1; }
+        # Check if using Git method for database (when using Git for files)
+        USE_GIT_FOR_DB=false
+        if [ "$UPLOADED_FILES_METHOD" = "git" ] && [ -n "$FILES_GIT_REPO" ] && [ "$SYNC_DATABASE" = "auto" ]; then
+            USE_GIT_FOR_DB=true
         fi
+        
+        # Only require SSH tools if we need them (not needed for Git method)
         if [ "$UPLOADED_FILES_METHOD" != "git" ]; then
             # Need SSH tools for zip/rsync methods
             command -v rsync >/dev/null 2>&1 || { print_error "rsync is required but not installed"; exit 1; }
             command -v ssh >/dev/null 2>&1 || { print_error "ssh is required but not installed"; exit 1; }
             command -v scp >/dev/null 2>&1 || { print_error "scp is required but not installed"; exit 1; }
-        elif [ "$SYNC_DATABASE" = "auto" ]; then
-            # For Git method, only need SSH if we're syncing database and DB isn't directly accessible
-            # Need SSH to export database from production server
-            command -v ssh >/dev/null 2>&1 || { print_warning "ssh not available - database export from production requires SSH"; }
+        elif [ "$SYNC_DATABASE" = "auto" ] && [ "$USE_GIT_FOR_DB" != "true" ]; then
+            # For Git file method but non-Git database sync, need SSH for database export
+            command -v ssh >/dev/null 2>&1 || { print_error "ssh is required for database export from production"; exit 1; }
         fi
     else
         # REMOTE_HOST not set - check if we're on production
@@ -161,18 +164,26 @@ check_prerequisites() {
             echo "✓ Running directly on production server"
             echo "  Site path: ${PROD_PATH}"
         else
-            # REMOTE_HOST not set - for Git method, this is OK if production already pushed files
+            # REMOTE_HOST not set - check if we can use Git method for everything
+            USE_GIT_FOR_DB=false
+            if [ "$UPLOADED_FILES_METHOD" = "git" ] && [ -n "$FILES_GIT_REPO" ] && [ "$SYNC_DATABASE" = "auto" ]; then
+                USE_GIT_FOR_DB=true
+            fi
+            
             # We only need REMOTE_HOST if:
             # 1. Using zip/rsync file methods, OR
-            # 2. Need to export database from production server
+            # 2. Need to export database from production server (and not using Git method)
             if [ "$UPLOADED_FILES_METHOD" != "git" ]; then
                 print_error "REMOTE_HOST must be set for ${UPLOADED_FILES_METHOD} file method"
                 print_error "Set in .deployment-config or as environment variable:"
                 print_error "  REMOTE_HOST=server.com"
                 exit 1
-            elif [ "$SYNC_DATABASE" = "auto" ]; then
-                print_warning "REMOTE_HOST not set - database export will require REMOTE_HOST or direct DB access"
-                print_warning "Or production files/database were already pushed from production server"
+            elif [ "$SYNC_DATABASE" = "auto" ] && [ "$USE_GIT_FOR_DB" != "true" ]; then
+                print_warning "REMOTE_HOST not set - database export will require REMOTE_HOST"
+                print_warning "For file sync, using Git method (files should be pushed to Git from production first)"
+                print_warning "To use Git for database too, ensure FILES_GIT_REPO is set in .deployment-config"
+            elif [ "$USE_GIT_FOR_DB" = "true" ]; then
+                echo "✓ Using Git method for both files and database (no REMOTE_HOST needed)"
             fi
             # For Git method without REMOTE_HOST, assume we're just pulling from Git
             # Production path doesn't matter since we're not accessing it
@@ -180,24 +191,145 @@ check_prerequisites() {
         fi
     fi
     
-    # Load database credentials from .env (required)
-    if [ ! -f "${PROJECT_DIR}/.env" ]; then
-        print_error ".env file not found at ${PROJECT_DIR}/.env"
-        print_error ".env file is required for database credentials"
-        exit 1
-    fi
-    
-    # Source .env to get DB credentials (will be used based on where script is running)
-    source "${PROJECT_DIR}/.env"
-    
-    # Validate DB credentials are present
-    if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
-        print_error "Database credentials not found in .env file"
-        print_error "Required: DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD"
-        exit 1
+    # Validate DB credentials are present (from .deployment-config)
+    # On production: always need DB credentials
+    # On dev: only need DB credentials if importing database (not when using Git method)
+    if is_running_on_production; then
+        # Always need DB credentials on production
+        if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
+            print_error "Database credentials not found in .deployment-config file"
+            print_error "Required: DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD"
+            print_error "Set them in ${CONFIG_FILE} or as environment variables"
+            exit 1
+        fi
+    else
+        # On dev: check if we need DB credentials
+        USE_GIT_FOR_DB=false
+        if [ "$UPLOADED_FILES_METHOD" = "git" ] && [ -n "$FILES_GIT_REPO" ] && [ "$SYNC_DATABASE" = "auto" ] && [ -z "$REMOTE_HOST" ]; then
+            USE_GIT_FOR_DB=true
+        fi
+        
+        if [ "$USE_GIT_FOR_DB" != "true" ] && [ "$SYNC_DATABASE" = "auto" ]; then
+            # Need DB credentials for import (when not using Git method)
+            if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
+                print_error "Database credentials not found in .deployment-config file"
+                print_error "Required: DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD"
+                print_error "Set them in ${CONFIG_FILE} or as environment variables"
+                exit 1
+            fi
+        elif [ "$USE_GIT_FOR_DB" = "true" ]; then
+            # Using Git method - only need local dev DB credentials for import
+            if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
+                print_warning "Local database credentials not found - will be needed for import"
+                print_warning "Set DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD in ${CONFIG_FILE}"
+            fi
+        fi
     fi
     
     echo "✓ All prerequisites met"
+}
+
+# Export database from production and push to Git
+export_production_database_to_git() {
+    print_step "Exporting database from production and pushing to Git..."
+    
+    if [ -z "$FILES_GIT_REPO" ]; then
+        print_error "FILES_GIT_REPO must be configured for Git-based database sync"
+        return 1
+    fi
+    
+    # DB credentials are already loaded from .deployment-config
+    echo "Exporting database..."
+    echo "  Host: ${DB_HOSTNAME}"
+    echo "  Database: ${DB_DATABASE}"
+    echo "  User: ${DB_USERNAME}"
+    
+    # Create temp directory for Git operations
+    DB_TEMP_DIR="${SCRIPT_DIR}/.db-git-temp"
+    if [ -d "${DB_TEMP_DIR}" ]; then
+        rm -rf "${DB_TEMP_DIR}"
+    fi
+    mkdir -p "${DB_TEMP_DIR}/database"
+    
+    cd "${DB_TEMP_DIR}"
+    git init
+    git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+    
+    # Try to fetch existing branch
+    git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
+    if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
+        git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+    else
+        git checkout -b "${FILES_GIT_BRANCH}"
+    fi
+    
+    # Export database to compressed file
+    DB_FILE="database/production_db_${TIMESTAMP}.sql.gz"
+    mysqldump -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}"
+    
+    # Keep only the latest database backup (remove old ones)
+    find database/ -name "production_db_*.sql.gz" -type f ! -name "production_db_${TIMESTAMP}.sql.gz" -delete
+    
+    # Also create/update a symlink or copy to "latest.sql.gz" for easy access
+    ln -sf "production_db_${TIMESTAMP}.sql.gz" "database/latest.sql.gz" 2>/dev/null || \
+        cp "${DB_FILE}" "database/latest.sql.gz"
+    
+    # Commit and push
+    git add -A
+    if ! git diff --staged --quiet; then
+        git commit -m "Database backup from production $(date +%Y-%m-%d\ %H:%M:%S)" || true
+        # Pull first to merge any remote changes, then push
+        if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
+            git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
+        fi
+        git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
+        echo "✓ Database exported and pushed to Git"
+    else
+        echo "No database changes to sync"
+    fi
+    
+    echo "${DB_FILE}"
+}
+
+# Pull database from Git and return path to file
+pull_database_from_git() {
+    print_step "Pulling database from Git..."
+    
+    if [ -z "$FILES_GIT_REPO" ]; then
+        print_error "FILES_GIT_REPO must be configured for Git-based database sync"
+        return 1
+    fi
+    
+    # Create temp directory for Git operations
+    DB_TEMP_DIR="${SCRIPT_DIR}/.db-git-temp"
+    if [ -d "${DB_TEMP_DIR}" ]; then
+        rm -rf "${DB_TEMP_DIR}"
+    fi
+    mkdir -p "${DB_TEMP_DIR}"
+    
+    cd "${DB_TEMP_DIR}"
+    git init
+    git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+    
+    git fetch origin "${FILES_GIT_BRANCH}"
+    git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+    
+    # Find the latest database file (use absolute path)
+    if [ -f "database/latest.sql.gz" ]; then
+        DB_FILE="${DB_TEMP_DIR}/database/latest.sql.gz"
+        echo "✓ Database pulled from Git: ${DB_FILE}"
+        echo "${DB_FILE}"
+    elif [ -n "$(find database/ -name "production_db_*.sql.gz" -type f 2>/dev/null | head -1)" ]; then
+        # Find the most recent database file
+        DB_FILE_RELATIVE=$(find database/ -name "production_db_*.sql.gz" -type f | sort -r | head -1)
+        DB_FILE="${DB_TEMP_DIR}/${DB_FILE_RELATIVE}"
+        echo "✓ Database pulled from Git: ${DB_FILE}"
+        echo "${DB_FILE}"
+    else
+        print_error "No database file found in Git repository"
+        print_error "Make sure database has been exported and pushed to Git from production server"
+        return 1
+    fi
 }
 
 # Export database from production
@@ -207,25 +339,29 @@ export_production_database() {
     mkdir -p "${DB_BACKUP_DIR}"
     DB_FILE="${DB_BACKUP_DIR}/production_db_${TIMESTAMP}.sql"
     
-    # DB credentials are already loaded from .env in check_prerequisites
-    # On production: these are production DB credentials
-    # On dev: these would be dev DB credentials (but we need production, so use SSH)
+    # DB credentials are already loaded from .deployment-config in check_prerequisites
+    # On production: these are production DB credentials from production .deployment-config
+    # On dev: these would be dev DB credentials (but we need production, so use SSH with production config)
     
     echo "Exporting database..."
     
     if is_running_on_production; then
-        # Running on production server - use local DB credentials from .env
+        # Running on production server - use DB credentials from production .deployment-config
         echo "  Host: ${DB_HOSTNAME}"
         echo "  Database: ${DB_DATABASE}"
         echo "  User: ${DB_USERNAME}"
         mysqldump -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}.gz"
     elif [ -n "$REMOTE_HOST" ]; then
         # Running from dev - need to export from production via SSH
-        # Production .env has production DB credentials
+        # Production .deployment-config has production DB credentials
+        # The deployment config is in the concrete-sync directory (same level as site, or find it)
+        # Try common locations: ../concrete-sync or ~/concrete-sync
         echo "  Connecting to production server: ${REMOTE_HOST}"
-        echo "  Will use production database credentials from production .env file"
+        echo "  Will use production database credentials from production .deployment-config file"
         ssh "${REMOTE_HOST}" \
-            "cd ${REMOTE_PATH} && [ -f .env ] && source .env && mysqldump -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}" \
+            "CONFIG_DIR=\$(find ~ -name '.deployment-config' -type f 2>/dev/null | head -1 | xargs dirname 2>/dev/null) || CONFIG_DIR=\$(dirname ${REMOTE_PATH})/concrete-sync; \
+             [ -f \"\${CONFIG_DIR}/.deployment-config\" ] && cd \"\${CONFIG_DIR}\" && source .deployment-config && \
+             mysqldump -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}" \
             | gzip > "${DB_FILE}.gz"
     else
         # No REMOTE_HOST - cannot export from production without SSH access
@@ -255,12 +391,26 @@ import_database() {
         return 1
     fi
     
-    # DB credentials already loaded from .env in check_prerequisites
+    # DB credentials already loaded from .deployment-config in check_prerequisites
     # These are the local dev database credentials
     
-    print_warning "Importing database - this will overwrite your local database!"
+    print_warning "Importing database - this will REPLACE your local database!"
     echo "  Source: ${DB_FILE}"
     echo "  Target: ${DB_HOSTNAME}/${DB_DATABASE}"
+    echo ""
+    echo "This will drop all existing tables and import fresh data from production."
+    
+    # Drop existing database and recreate it for clean import
+    echo "Preparing database (dropping existing if present)..."
+    mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" \
+        -e "DROP DATABASE IF EXISTS \`${DB_DATABASE}\`;" 2>/dev/null || true
+    
+    echo "Creating fresh database..."
+    mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" \
+        -e "CREATE DATABASE \`${DB_DATABASE}\`;" 2>/dev/null || {
+        print_error "Failed to create database. It may already exist or you may not have permissions."
+        return 1
+    }
     
     # Import database
     echo "Importing database..."
@@ -268,6 +418,13 @@ import_database() {
         gunzip -c "${DB_FILE}" | mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}"
     else
         mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" < "${DB_FILE}"
+    fi
+    
+    if [ $? -eq 0 ]; then
+        echo "✓ Database imported to local development"
+    else
+        print_error "Database import failed"
+        return 1
     fi
     
     echo "✓ Database imported to local development"
@@ -280,6 +437,13 @@ pull_files() {
     if is_running_on_production; then
         # Running on production - this doesn't make sense, skip it
         echo "Running on production server - skipping file pull (already have files)"
+        return 0
+    fi
+    
+    # Need REMOTE_HOST for rsync
+    if [ -z "$REMOTE_HOST" ]; then
+        echo "REMOTE_HOST not set - skipping file pull via rsync"
+        echo "Files should be pulled from Git repository instead"
         return 0
     fi
     
@@ -525,6 +689,9 @@ EOF
 install_dependencies() {
     print_step "Installing dependencies..."
     
+    # Change to project directory (important: may have been in temp directories)
+    cd "${PROJECT_DIR}" || { print_error "Cannot change to PROJECT_DIR: ${PROJECT_DIR}"; return 1; }
+    
     # Install Composer dependencies
     composer install
     
@@ -560,9 +727,12 @@ main() {
     
     check_prerequisites
     
-    # Pull files (only if running from dev)
-    if ! is_running_on_production; then
+    # Pull files via rsync (only if running from dev and REMOTE_HOST is set)
+    # If using Git method, files are pulled from Git, not via rsync
+    if ! is_running_on_production && [ -n "$REMOTE_HOST" ]; then
         pull_files
+    elif ! is_running_on_production && [ -z "$REMOTE_HOST" ]; then
+        echo "Skipping rsync file pull (REMOTE_HOST not set - using Git method for files)"
     fi
     
     # Optionally pull/push uploaded files
@@ -575,17 +745,44 @@ main() {
     
     # Handle database sync
     if [ "$SYNC_DATABASE" = "auto" ]; then
+        # Check if we should use Git method for database (when using Git for files and no REMOTE_HOST)
+        USE_GIT_FOR_DB=false
+        if [ "$UPLOADED_FILES_METHOD" = "git" ] && [ -z "$REMOTE_HOST" ] && [ -n "$FILES_GIT_REPO" ]; then
+            USE_GIT_FOR_DB=true
+        fi
+        
         if is_running_on_production; then
-            # Running on production - export database for later import to dev
-            print_step "Exporting database from production (for dev sync)..."
-            DB_FILE=$(export_production_database)
-            echo "✓ Database exported to: ${DB_FILE}"
-            echo "  This will be imported when you run this script from dev machine"
+            # Running on production - export database
+            if [ "$USE_GIT_FOR_DB" = "true" ]; then
+                # Export and push to Git (function already prints step message)
+                export_production_database_to_git
+                echo "  This will be imported when you run this script from dev machine"
+            else
+                # Export locally (for SSH-based sync)
+                print_step "Exporting database from production (for dev sync)..."
+                DB_FILE=$(export_production_database)
+                echo "✓ Database exported to: ${DB_FILE}"
+                echo "  This will be imported when you run this script from dev machine"
+            fi
         else
             # Running from dev - export and import
-            print_step "Syncing database from production to dev..."
-            DB_FILE=$(export_production_database)
-            import_database "${DB_FILE}"
+            if [ "$USE_GIT_FOR_DB" = "true" ]; then
+                # Pull from Git and import
+                print_step "Syncing database from production to dev via Git..."
+                DB_FILE=$(pull_database_from_git)
+                if [ -n "$DB_FILE" ] && [ -f "$DB_FILE" ]; then
+                    import_database "${DB_FILE}"
+                else
+                    print_error "Failed to pull database from Git"
+                fi
+            elif [ -z "$REMOTE_HOST" ]; then
+                print_error "Cannot export database from production without REMOTE_HOST"
+                print_error "Either set REMOTE_HOST in .deployment-config or use Git method (set UPLOADED_FILES_METHOD=git and FILES_GIT_REPO)"
+            else
+                print_step "Syncing database from production to dev..."
+                DB_FILE=$(export_production_database)
+                import_database "${DB_FILE}"
+            fi
         fi
     else
         if is_running_on_production; then
@@ -601,7 +798,15 @@ main() {
     fi
     
     if is_running_on_production; then
-        print_step "Files pushed to Git - run this script from dev machine to complete sync"
+        USE_GIT_FOR_DB=false
+        if [ "$UPLOADED_FILES_METHOD" = "git" ] && [ -z "$REMOTE_HOST" ] && [ -n "$FILES_GIT_REPO" ] && [ "$SYNC_DATABASE" = "auto" ]; then
+            USE_GIT_FOR_DB=true
+        fi
+        if [ "$USE_GIT_FOR_DB" = "true" ]; then
+            print_step "Files and database pushed to Git - run this script from dev machine to complete sync"
+        else
+            print_step "Files pushed to Git - run this script from dev machine to complete sync"
+        fi
     else
         print_step "Sync from production completed successfully!"
     fi

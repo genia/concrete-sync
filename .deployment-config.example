@@ -15,11 +15,10 @@ REMOTE_USER=""  # Optional: SSH user (will be combined with REMOTE_HOST if not i
 # On dev: these access your local development database
 # On production: these access the production database
 # WARNING: This file may contain sensitive information - do not commit to Git!
-# Note: If not set here, the script will use values from .env file
-# DB_HOSTNAME=""  # Database hostname (e.g., localhost or mysql.example.com)
-# DB_DATABASE=""  # Database name
-# DB_USERNAME=""  # Database username
-# DB_PASSWORD=""  # Database password (consider using environment variable instead)
+DB_HOSTNAME=""  # Database hostname (e.g., localhost or mysql.example.com)
+DB_DATABASE=""  # Database name
+DB_USERNAME=""  # Database username
+DB_PASSWORD=""  # Database password (consider using environment variable instead)
 
 # File syncing configuration (for Git method)
 FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git

@@ -31,9 +31,9 @@ UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
 FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 SYNC_DATABASE="auto"  # Options: auto, skip
-# DB credentials will be loaded from .env
+# DB credentials will be loaded from .deployment-config
 # On dev: uses local dev database credentials (for export)
-# Production DB credentials will be loaded from production .env via SSH
+# Production DB credentials will be loaded from production .deployment-config via SSH
 
 # Load configuration from .deployment-config if it exists
 CONFIG_FILE="${SCRIPT_DIR}/.deployment-config"
@@ -51,7 +51,10 @@ UPLOADED_FILES_METHOD="${UPLOADED_FILES_METHOD:-git}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
 SYNC_DATABASE="${SYNC_DATABASE:-auto}"
-# DB credentials loaded from .env file (for local dev database)
+DB_HOSTNAME="${DB_HOSTNAME:-}"
+DB_DATABASE="${DB_DATABASE:-}"
+DB_USERNAME="${DB_USERNAME:-}"
+DB_PASSWORD="${DB_PASSWORD:-}"
 
 # Set PROJECT_DIR to SITE_PATH (the actual site location)
 # For backwards compatibility, if SITE_PATH not set but PROJECT_DIR is, use that
@@ -67,7 +70,7 @@ if [ -n "$REMOTE_USER" ] && [ -n "$REMOTE_HOST" ] && [[ ! "$REMOTE_HOST" == *"@"
     REMOTE_HOST="${REMOTE_USER}@${REMOTE_HOST}"
 fi
 
-# Database configuration will be loaded in check_prerequisites after SITE_PATH is validated
+# Database credentials will be loaded from .deployment-config in check_prerequisites
 
 # Functions
 print_step() {
@@ -118,19 +121,11 @@ check_prerequisites() {
         exit 1
     fi
     
-    # Load database credentials from .env (for local dev database)
-    if [ ! -f "${PROJECT_DIR}/.env" ]; then
-        print_error ".env file not found at ${PROJECT_DIR}/.env"
-        print_error ".env file is required for database credentials"
-        exit 1
-    fi
-    
-    source "${PROJECT_DIR}/.env"
-    
-    # Validate DB credentials are present
+    # Validate DB credentials are present (from .deployment-config)
     if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
-        print_error "Database credentials not found in .env file"
+        print_error "Database credentials not found in .deployment-config file"
         print_error "Required: DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD"
+        print_error "Set them in ${CONFIG_FILE} or as environment variables"
         exit 1
     fi
     
@@ -168,6 +163,9 @@ export_database() {
 # Build assets
 build_assets() {
     print_step "Building assets..."
+    
+    # Change to project directory (important: may have been in temp directories)
+    cd "${PROJECT_DIR}" || { print_error "Cannot change to PROJECT_DIR: ${PROJECT_DIR}"; return 1; }
     
     if [ ! -d "${PROJECT_DIR}/node_modules" ]; then
         echo "Installing npm dependencies..."
@@ -381,21 +379,27 @@ import_database() {
     
     DB_FILE="$1"
     
-    # Production DB credentials are in production .env file
+    # Production DB credentials are in production .deployment-config file
     # We'll load them via SSH when importing
+    # Find the deployment config file on production server (it's in the concrete-sync directory)
     echo "Importing database..."
     echo "  Source: ${DB_FILE}"
-    echo "  Target: Production database (credentials from production .env)"
+    echo "  Target: Production database (credentials from production .deployment-config)"
     echo "  Server: ${REMOTE_HOST}"
     
     # Transfer and import database
-    # Production .env has production DB credentials
+    # Production .deployment-config has production DB credentials
+    # Try to find the config file: look for .deployment-config in common locations
     if [[ "$DB_FILE" == *.gz ]]; then
         gunzip -c "${DB_FILE}" | ssh "${REMOTE_HOST}" \
-            "cd ${REMOTE_PATH} && [ -f .env ] && source .env && mysql -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}"
+            "CONFIG_DIR=\$(find ~ -name '.deployment-config' -type f 2>/dev/null | head -1 | xargs dirname 2>/dev/null) || CONFIG_DIR=\$(dirname ${REMOTE_PATH})/concrete-sync; \
+             [ -f \"\${CONFIG_DIR}/.deployment-config\" ] && cd \"\${CONFIG_DIR}\" && source .deployment-config && \
+             mysql -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}"
     else
         ssh "${REMOTE_HOST}" \
-            "cd ${REMOTE_PATH} && [ -f .env ] && source .env && mysql -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}" < "${DB_FILE}"
+            "CONFIG_DIR=\$(find ~ -name '.deployment-config' -type f 2>/dev/null | head -1 | xargs dirname 2>/dev/null) || CONFIG_DIR=\$(dirname ${REMOTE_PATH})/concrete-sync; \
+             [ -f \"\${CONFIG_DIR}/.deployment-config\" ] && cd \"\${CONFIG_DIR}\" && source .deployment-config && \
+             mysql -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}" < "${DB_FILE}"
     fi
     
     echo "✓ Database imported to production"
