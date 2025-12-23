@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Concrete CMS Deployment Script: Bidirectional Sync via Git
-# This script syncs data between production and development environments using Git
+# This script syncs data between any environments using Git as the intermediary
 # Usage: ./concrete-cms-sync.sh [push|pull]
 #   push - Push files/database from current environment to Git (for syncing to other environment)
 #   pull - Pull files/database from Git to current environment (from other environment)
@@ -26,11 +26,9 @@ FILES_GIT_REPO=""  # REQUIRED: e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 SYNC_DATABASE="auto"  # Options: auto, skip
 COMPOSER_DIR=""  # Directory containing composer.phar (e.g., /usr/local/bin or /opt/composer)
-ENVIRONMENT=""  # REQUIRED: "prod" or "dev" - set to "prod" on production server, "dev" on development machine
 SYNC_DIRECTION=""  # Will be set from command-line argument: "push" or "pull"
 # DB credentials will be loaded from .deployment-config
-# On dev: uses local dev database credentials
-# On production: uses production database credentials
+# Uses database credentials from the current environment's .deployment-config
 
 # Load configuration from .deployment-config if it exists
 CONFIG_FILE="${SCRIPT_DIR}/.deployment-config"
@@ -45,7 +43,6 @@ FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
 SYNC_DATABASE="${SYNC_DATABASE:-auto}"
 COMPOSER_DIR="${COMPOSER_DIR:-}"
-ENVIRONMENT="${ENVIRONMENT:-}"
 DB_HOSTNAME="${DB_HOSTNAME:-}"
 DB_DATABASE="${DB_DATABASE:-}"
 DB_USERNAME="${DB_USERNAME:-}"
@@ -59,7 +56,6 @@ else
     COMPOSER_CMD="composer"
 fi
 
-# Set PROJECT_DIR to SITE_PATH (the actual site location)
 # For backwards compatibility, if SITE_PATH not set but PROJECT_DIR is, use that
 if [ -z "$SITE_PATH" ] && [ -n "${PROJECT_DIR:-}" ]; then
     SITE_PATH="${PROJECT_DIR}"
@@ -80,29 +76,6 @@ print_error() {
     echo -e "${RED}Error: $1${NC}" >&2
 }
 
-# Check if running on production server directly
-is_running_on_production() {
-    # Check ENVIRONMENT variable from config file
-    if [ -n "$ENVIRONMENT" ]; then
-        if [ "$ENVIRONMENT" = "prod" ] || [ "$ENVIRONMENT" = "production" ]; then
-            return 0
-        elif [ "$ENVIRONMENT" = "dev" ] || [ "$ENVIRONMENT" = "development" ]; then
-            return 1
-        else
-            print_error "ENVIRONMENT must be 'prod' or 'dev', got: ${ENVIRONMENT}"
-            exit 1
-        fi
-    fi
-    
-    # Fallback: if ENVIRONMENT not set, check legacy RUNNING_ON_PRODUCTION variable
-    if [ "${RUNNING_ON_PRODUCTION:-}" = "true" ]; then
-        return 0
-    fi
-    
-    # Default: assume dev if not explicitly set
-    return 1
-}
-
 # Print deployment plan banner
 print_deployment_plan() {
     local direction="$1"
@@ -113,7 +86,6 @@ print_deployment_plan() {
     echo "                    DEPLOYMENT PLAN - ${direction_upper}"
     echo "═══════════════════════════════════════════════════════════════════════════════"
     echo ""
-    echo "Environment: ${ENVIRONMENT:-not set}"
     echo "Site Path: ${SITE_PATH:-not set}"
     echo "Git Repository: ${FILES_GIT_REPO:-not set}"
     echo "Git Branch: ${FILES_GIT_BRANCH:-main}"
@@ -422,20 +394,6 @@ select_snapshot_tag() {
 check_prerequisites() {
     print_step "Checking prerequisites..."
     
-    # ENVIRONMENT is required
-    if [ -z "$ENVIRONMENT" ]; then
-        print_error "ENVIRONMENT must be set in .deployment-config"
-        print_error "Set it to 'prod' on production server or 'dev' on development machine:"
-        print_error "  ENVIRONMENT=prod  # or ENVIRONMENT=dev"
-        exit 1
-    fi
-    
-    # Validate ENVIRONMENT value
-    if [ "$ENVIRONMENT" != "prod" ] && [ "$ENVIRONMENT" != "production" ] && [ "$ENVIRONMENT" != "dev" ] && [ "$ENVIRONMENT" != "development" ]; then
-        print_error "ENVIRONMENT must be 'prod' or 'dev', got: ${ENVIRONMENT}"
-        exit 1
-    fi
-    
     # SITE_PATH is required
     if [ -z "$SITE_PATH" ]; then
         print_error "SITE_PATH must be set (path to Concrete CMS site root)"
@@ -464,7 +422,6 @@ check_prerequisites() {
         print_warning "Expected: site root with public/ subdirectory and composer.json"
     fi
     
-    PROJECT_DIR="${SITE_PATH}"  # Use SITE_PATH as PROJECT_DIR throughout
     
     command -v mysql >/dev/null 2>&1 || { print_error "mysql client is required but not installed"; exit 1; }
     
@@ -478,18 +435,8 @@ check_prerequisites() {
         exit 1
     fi
     
-    # Determine environment
-    if is_running_on_production; then
-        # Running on production server
-        PROD_PATH="${SITE_PATH}"
-        echo "✓ Running on production server (ENVIRONMENT=${ENVIRONMENT})"
-        echo "  Site path: ${PROD_PATH}"
-    else
-        # Running on dev machine
-        PROD_PATH="${SITE_PATH}"
-        echo "✓ Running on development machine (ENVIRONMENT=${ENVIRONMENT})"
-        echo "  Site path: ${SITE_PATH}"
-    fi
+    # Set path (behavior is controlled by push/pull argument)
+    echo "✓ Site path: ${SITE_PATH}"
     
     # Validate DB credentials are present (from .deployment-config)
     # Always need DB credentials for database operations
@@ -505,9 +452,9 @@ check_prerequisites() {
     echo "✓ All prerequisites met"
 }
 
-# Export database from production and push to Git
-export_production_database_to_git() {
-    print_step "Exporting database from production and pushing to Git..."
+# Export database and push to Git
+export_database_to_git() {
+    print_step "Exporting database and pushing to Git..."
     
     if [ -z "$FILES_GIT_REPO" ]; then
         print_error "FILES_GIT_REPO must be configured for Git-based database sync"
@@ -540,20 +487,20 @@ export_production_database_to_git() {
     fi
     
     # Export database to compressed file
-    DB_FILE="database/production_db_${TIMESTAMP}.sql.gz"
+    DB_FILE="database/db_${TIMESTAMP}.sql.gz"
     mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}"
     
     # Keep only the latest database backup (remove old ones)
-    find database/ -name "production_db_*.sql.gz" -type f ! -name "production_db_${TIMESTAMP}.sql.gz" -delete
+    find database/ -name "db_*.sql.gz" -type f ! -name "db_${TIMESTAMP}.sql.gz" -delete
     
     # Also create/update a symlink or copy to "latest.sql.gz" for easy access
-    ln -sf "production_db_${TIMESTAMP}.sql.gz" "database/latest.sql.gz" 2>/dev/null || \
+    ln -sf "db_${TIMESTAMP}.sql.gz" "database/latest.sql.gz" 2>/dev/null || \
         cp "${DB_FILE}" "database/latest.sql.gz"
     
     # Commit and push
     git add -A
     if ! git diff --staged --quiet; then
-        git commit -m "Database backup from production $(date +%Y-%m-%d\ %H:%M:%S)" || true
+        git commit -m "Database backup $(date +%Y-%m-%d\ %H:%M:%S)" || true
         # Pull first to merge any remote changes, then push
         if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
             git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
@@ -634,8 +581,8 @@ pull_database_from_git() {
     # Check if database directory exists
     if [ ! -d "database" ]; then
         print_error "No 'database' directory found in Git repository"
-        print_error "Make sure database has been exported and pushed to Git from production server"
-        print_error "Expected path in repo: database/latest.sql.gz or database/production_db_*.sql.gz"
+        print_error "Make sure database has been exported and pushed to Git"
+        print_error "Expected path in repo: database/latest.sql.gz or database/db_*.sql.gz"
         return 1
     fi
     
@@ -648,9 +595,9 @@ pull_database_from_git() {
         fi
         echo "✓ Database pulled from Git: ${DB_FILE}" >&2
         echo -n "${DB_FILE}"  # Only file path to stdout (no newline)
-    elif [ -n "$(find database/ -name "production_db_*.sql.gz" -type f 2>/dev/null | head -1)" ]; then
+    elif [ -n "$(find database/ -name "db_*.sql.gz" -type f 2>/dev/null | head -1)" ]; then
         # Find the most recent database file
-        DB_FILE_RELATIVE=$(find database/ -name "production_db_*.sql.gz" -type f | sort -r | head -1)
+        DB_FILE_RELATIVE=$(find database/ -name "db_*.sql.gz" -type f | sort -r | head -1)
         if [ -z "$DB_FILE_RELATIVE" ]; then
             print_error "No database files found in database/ directory"
             return 1
@@ -664,8 +611,8 @@ pull_database_from_git() {
         echo -n "${DB_FILE}"  # Only file path to stdout (no newline)
     else
         print_error "No database file found in Git repository"
-        print_error "Make sure database has been exported and pushed to Git from production server"
-        print_error "Expected files: database/latest.sql.gz or database/production_db_*.sql.gz"
+        print_error "Make sure database has been exported and pushed to Git"
+        print_error "Expected files: database/latest.sql.gz or database/db_*.sql.gz"
         print_error "Current directory contents:"
         ls -la . 2>/dev/null || true
         if [ -d "database" ]; then
@@ -676,16 +623,15 @@ pull_database_from_git() {
     fi
 }
 
-# Export database from production
-export_production_database() {
-    print_step "Exporting database from production..."
+# Export database (legacy function, kept for compatibility)
+export_database() {
+    print_step "Exporting database..."
     
     mkdir -p "${DB_BACKUP_DIR}"
-    DB_FILE="${DB_BACKUP_DIR}/production_db_${TIMESTAMP}.sql"
+    DB_FILE="${DB_BACKUP_DIR}/db_${TIMESTAMP}.sql"
     
     # DB credentials are already loaded from .deployment-config in check_prerequisites
-    # On production: these are production DB credentials from production .deployment-config
-    # On dev: these would be dev DB credentials (but we need production, so use SSH with production config)
+    # Uses database credentials from the current environment's .deployment-config
     
     echo "Exporting database..."
     
@@ -695,13 +641,13 @@ export_production_database() {
     echo "  User: ${DB_USERNAME}"
     mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}.gz"
     
-    echo "✓ Database exported from production to ${DB_FILE}.gz"
+    echo "✓ Database exported to ${DB_FILE}.gz"
     echo "${DB_FILE}.gz"
 }
 
-# Import database to local dev
+# Import database
 import_database() {
-    print_step "Importing database to local development..."
+    print_step "Importing database..."
     
     if [ -z "$1" ]; then
         print_error "Database file path required"
@@ -711,13 +657,13 @@ import_database() {
     DB_FILE="$1"
     
     # DB credentials already loaded from .deployment-config in check_prerequisites
-    # These are the local dev database credentials
+    # Uses database credentials from the current environment's .deployment-config
     
-    print_warning "Importing database - this will REPLACE your local database!"
+    print_warning "Importing database - this will REPLACE your database!"
     echo "  Source: ${DB_FILE}"
     echo "  Target: ${DB_HOSTNAME}/${DB_DATABASE}"
     echo ""
-    echo "This will drop all existing tables and import fresh data from production."
+    echo "This will drop all existing tables and import fresh data from the database dump."
     
     # Drop existing database and recreate it for clean import
     echo "Preparing database (dropping existing if present)..."
@@ -740,13 +686,13 @@ import_database() {
     fi
     
     if [ $? -eq 0 ]; then
-        echo "✓ Database imported to local development"
+        echo "✓ Database imported"
     else
         print_error "Database import failed"
         return 1
     fi
     
-    echo "✓ Database imported to local development"
+    echo "✓ Database imported"
 }
 
 # Sync uploaded files via Git (handles both push and pull)
@@ -764,7 +710,7 @@ pull_uploaded_files() {
         echo "Skipping uploaded files sync (SYNC_UPLOADED_FILES=skip)"
         return 0
     elif [ "$SYNC_UPLOADED_FILES" = "ask" ]; then
-        read -p "Do you want to sync uploaded files (images, documents) from production? (y/n) " -n 1 -r
+        read -p "Do you want to sync uploaded files (images, documents)? (y/n) " -n 1 -r
         echo
         SYNC_YES="$REPLY"
     else
@@ -782,17 +728,17 @@ pull_uploaded_files() {
         
         # Push or pull based on SYNC_DIRECTION
         if [ "$SYNC_DIRECTION" = "push" ]; then
-            # Running on production server directly
-            PROD_FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
+            # Push mode: export files to Git
+            FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
             
             # Clean up and recreate temp directory to avoid conflicts
-            if [ -d "${PROD_FILES_TEMP_DIR}" ]; then
+            if [ -d "${FILES_TEMP_DIR}" ]; then
                 echo "Cleaning up existing temp directory..."
-                rm -rf "${PROD_FILES_TEMP_DIR}"
+                rm -rf "${FILES_TEMP_DIR}"
             fi
             
-            mkdir -p "${PROD_FILES_TEMP_DIR}"
-            cd "${PROD_FILES_TEMP_DIR}"
+            mkdir -p "${FILES_TEMP_DIR}"
+            cd "${FILES_TEMP_DIR}"
             git init
             git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
             
@@ -804,14 +750,14 @@ pull_uploaded_files() {
                 git checkout -b "${FILES_GIT_BRANCH}"
             fi
             
-            # Copy files to temp directory from production site
+            # Copy files to temp directory from current site
             rm -rf *
-            cp -r "${PROD_PATH}/public/application/files/"* . 2>/dev/null || true
+            cp -r "${SITE_PATH}/public/application/files/"* . 2>/dev/null || true
             
             # Commit and push
             git add -A
             if ! git diff --staged --quiet; then
-                git commit -m "Sync files from production $(date +%Y-%m-%d\ %H:%M:%S)" || true
+                git commit -m "Sync files $(date +%Y-%m-%d\ %H:%M:%S)" || true
                 # Pull first to merge any remote changes, then push
                 if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
                     git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
@@ -855,7 +801,7 @@ pull_uploaded_files() {
             
             # Copy to local files directory using rsync
             # Ensure the target directory exists
-            mkdir -p "${PROJECT_DIR}/public/application/files"
+            mkdir -p "${SITE_PATH}/public/application/files"
             
             # Use rsync to copy files and show statistics
             # Exclude database and cache directories (they're stored separately in Git)
@@ -870,7 +816,7 @@ pull_uploaded_files() {
                     --exclude='database' \
                     --exclude='cache' \
                     --exclude='.git' \
-                    "${FILES_TEMP_DIR}/" "${PROJECT_DIR}/public/application/files/" 2>&1)
+                    "${FILES_TEMP_DIR}/" "${SITE_PATH}/public/application/files/" 2>&1)
                 
                 # Extract statistics from rsync output (handle different rsync versions)
                 # Try to get number of files transferred/changed
@@ -892,9 +838,9 @@ pull_uploaded_files() {
                 fi
                 
                 # Set proper permissions (readable by web server)
-                chmod -R u+rw "${PROJECT_DIR}/public/application/files" 2>/dev/null || true
-                find "${PROJECT_DIR}/public/application/files" -type d -exec chmod 755 {} \; 2>/dev/null || true
-                find "${PROJECT_DIR}/public/application/files" -type f -exec chmod 644 {} \; 2>/dev/null || true
+                chmod -R u+rw "${SITE_PATH}/public/application/files" 2>/dev/null || true
+                find "${SITE_PATH}/public/application/files" -type d -exec chmod 755 {} \; 2>/dev/null || true
+                find "${SITE_PATH}/public/application/files" -type f -exec chmod 644 {} \; 2>/dev/null || true
                 echo "  Set proper file permissions"
             else
                 print_warning "No files found in Git repository to copy"
@@ -942,25 +888,25 @@ pull_config_files() {
             git checkout -b "${FILES_GIT_BRANCH}"
         fi
         
-        # Copy config files from production site
+        # Copy config files from current site
         # Sync key Concrete CMS directories
-        if [ -d "${PROD_PATH}/public/application/config" ]; then
-            cp -r "${PROD_PATH}/public/application/config"/* "${CONFIG_TEMP_DIR}/config/" 2>/dev/null || true
+        if [ -d "${SITE_PATH}/public/application/config" ]; then
+            cp -r "${SITE_PATH}/public/application/config"/* "${CONFIG_TEMP_DIR}/config/" 2>/dev/null || true
         fi
-        if [ -d "${PROD_PATH}/public/application/themes" ]; then
-            cp -r "${PROD_PATH}/public/application/themes" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+        if [ -d "${SITE_PATH}/public/application/themes" ]; then
+            cp -r "${SITE_PATH}/public/application/themes" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
         fi
-        if [ -d "${PROD_PATH}/public/application/blocks" ]; then
-            cp -r "${PROD_PATH}/public/application/blocks" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+        if [ -d "${SITE_PATH}/public/application/blocks" ]; then
+            cp -r "${SITE_PATH}/public/application/blocks" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
         fi
-        if [ -d "${PROD_PATH}/public/application/packages" ]; then
-            cp -r "${PROD_PATH}/public/application/packages" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+        if [ -d "${SITE_PATH}/public/application/packages" ]; then
+            cp -r "${SITE_PATH}/public/application/packages" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
         fi
         
         # Commit and push
         git add -A
         if ! git diff --staged --quiet; then
-            git commit -m "Sync config files from production $(date +%Y-%m-%d\ %H:%M:%S)" || true
+            git commit -m "Sync config files $(date +%Y-%m-%d\ %H:%M:%S)" || true
             if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
                 git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
             fi
@@ -1003,9 +949,9 @@ pull_config_files() {
         local total_config_changed=0
         
         if [ -d "${CONFIG_TEMP_DIR}/config" ]; then
-            mkdir -p "${PROJECT_DIR}/public/application/config"
+            mkdir -p "${SITE_PATH}/public/application/config"
             echo "  Syncing config files..."
-            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/config/" "${PROJECT_DIR}/public/application/config/" 2>&1)
+            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/config/" "${SITE_PATH}/public/application/config/" 2>&1)
             files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
             if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
                 total_config_files=$((total_config_files + files_transferred))
@@ -1013,9 +959,9 @@ pull_config_files() {
             fi
         fi
         if [ -d "${CONFIG_TEMP_DIR}/themes" ]; then
-            mkdir -p "${PROJECT_DIR}/public/application/themes"
+            mkdir -p "${SITE_PATH}/public/application/themes"
             echo "  Syncing themes..."
-            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/themes/" "${PROJECT_DIR}/public/application/themes/" 2>&1)
+            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/themes/" "${SITE_PATH}/public/application/themes/" 2>&1)
             files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
             if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
                 total_config_files=$((total_config_files + files_transferred))
@@ -1023,9 +969,9 @@ pull_config_files() {
             fi
         fi
         if [ -d "${CONFIG_TEMP_DIR}/blocks" ]; then
-            mkdir -p "${PROJECT_DIR}/public/application/blocks"
+            mkdir -p "${SITE_PATH}/public/application/blocks"
             echo "  Syncing blocks..."
-            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/blocks/" "${PROJECT_DIR}/public/application/blocks/" 2>&1)
+            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/blocks/" "${SITE_PATH}/public/application/blocks/" 2>&1)
             files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
             if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
                 total_config_files=$((total_config_files + files_transferred))
@@ -1033,9 +979,9 @@ pull_config_files() {
             fi
         fi
         if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
-            mkdir -p "${PROJECT_DIR}/public/application/packages"
+            mkdir -p "${SITE_PATH}/public/application/packages"
             echo "  Syncing packages..."
-            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/packages/" "${PROJECT_DIR}/public/application/packages/" 2>&1)
+            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/application/packages/" 2>&1)
             files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
             if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
                 total_config_files=$((total_config_files + files_transferred))
@@ -1055,8 +1001,8 @@ pull_config_files() {
 install_dependencies() {
     print_step "Installing dependencies..."
     
-    # Change to project directory (important: may have been in temp directories)
-    cd "${PROJECT_DIR}" || { print_error "Cannot change to PROJECT_DIR: ${PROJECT_DIR}"; return 1; }
+    # Change to site directory (important: may have been in temp directories)
+    cd "${SITE_PATH}" || { print_error "Cannot change to SITE_PATH: ${SITE_PATH}"; return 1; }
     
     # Install Composer dependencies
     ${COMPOSER_CMD} install
@@ -1068,7 +1014,8 @@ install_dependencies() {
 clear_caches() {
     print_step "Clearing caches..."
     
-    if [ -f "${PROJECT_DIR}/vendor/bin/concrete" ]; then
+    if [ -f "${SITE_PATH}/vendor/bin/concrete" ]; then
+        cd "${SITE_PATH}"
         ./vendor/bin/concrete c5:clear-cache
     fi
     
@@ -1192,7 +1139,7 @@ main() {
         
         if [ "$SYNC_DIRECTION" = "push" ]; then
             # Push direction - export and push to Git
-            export_production_database_to_git
+            export_database_to_git
             echo "  Database pushed to Git - run 'pull' on target environment to import"
         else
             # Pull direction - pull from Git and import

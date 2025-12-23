@@ -1,14 +1,14 @@
 # Concrete CMS Deployment Sync Tools
 
-Tools for syncing Concrete CMS sites between development and production environments using Git as the intermediary.
+Tools for syncing Concrete CMS sites between any environments using Git as the intermediary.
 
 ## Overview
 
-This toolkit provides scripts to synchronize Concrete CMS sites between environments (development and production) using Git for all file transfers. All syncing operations are bidirectional and use Git exclusively, eliminating the need for direct SSH file transfers.
+This toolkit provides scripts to synchronize Concrete CMS sites between any environments using Git for all file transfers. The script is designed for seamless migration between environments - whether that's production to development, development back to production, migrating from one production server to another, or any other environment-to-environment transfer. All syncing operations are bidirectional and use Git exclusively, eliminating the need for direct SSH file transfers.
 
 ## Features
 
-- **Bidirectional syncing** - Push from production to Git, pull from Git to development (or vice versa)
+- **Bidirectional syncing** - Push from any environment to Git, pull from Git to any environment
 - **Git-based file transfer** - All files (uploaded files, config files, database dumps) synced via Git
 - **Snapshot tagging** - Automatic tagging of complete site snapshots for easy restoration
 - **Incremental updates** - Only changed files are transferred using rsync
@@ -24,18 +24,17 @@ This toolkit provides scripts to synchronize Concrete CMS sites between environm
    ```
 
 2. **Edit `.deployment-config`** with your settings:
-   - `ENVIRONMENT` - Set to `prod` on production server, `dev` on development machine
-   - `SITE_PATH` - Path to your Concrete CMS site root
-   - `FILES_GIT_REPO` - Git repository URL for syncing files
-   - Database credentials
+   - `SITE_PATH` - Path to your Concrete CMS site root (required)
+   - `FILES_GIT_REPO` - Git repository URL for syncing files (required)
+   - Database credentials for the current environment
    - Other sync settings
 
 3. **Run the sync script:**
    ```bash
-   # Push from production to Git
+   # Push current environment's data to Git
    ./concrete-cms-sync.sh push
    
-   # Pull from Git to development
+   # Pull data from Git to current environment
    ./concrete-cms-sync.sh pull
    ```
 
@@ -50,13 +49,13 @@ Main bidirectional sync script. Handles both pushing data to Git and pulling dat
 ./concrete-cms-sync.sh [push|pull]
 ```
 
-**Push mode** (typically run on production):
+**Push mode** (run on the source environment):
 - Exports database to Git
 - Pushes uploaded files to Git
 - Pushes config files (config/, themes/, blocks/, packages/) to Git
 - Creates a unified snapshot tag
 
-**Pull mode** (typically run on development):
+**Pull mode** (run on the target environment):
 - Prompts for snapshot selection (latest or specific tag)
 - Pulls database from Git and imports it
 - Pulls uploaded files from Git
@@ -70,7 +69,7 @@ Simple database backup script.
 
 **Usage:**
 ```bash
-./backup-database.sh [dev|prod]
+./backup-database.sh
 ```
 
 Creates a compressed database backup in the current directory.
@@ -90,7 +89,6 @@ All configuration is done via `.deployment-config`. See `.deployment-config.exam
 
 ### Key Configuration Variables
 
-- `ENVIRONMENT` - `prod` or `dev` (required)
 - `SITE_PATH` - Path to Concrete CMS site root (required)
 - `FILES_GIT_REPO` - Git repository URL for syncing (required)
 - `FILES_GIT_BRANCH` - Git branch to use (default: `main`)
@@ -107,33 +105,29 @@ All configuration is done via `.deployment-config`. See `.deployment-config.exam
 
 ## Deployment Workflow
 
-### Production → Development
+The script works seamlessly between any environments. Here are common scenarios:
 
-1. On production server:
+### Environment A → Environment B
+
+1. On source environment:
    ```bash
    ./concrete-cms-sync.sh push
    ```
    This exports the database, pushes files and config to Git, and creates a snapshot tag.
 
-2. On development machine:
+2. On target environment:
    ```bash
    ./concrete-cms-sync.sh pull
    ```
    Select a snapshot (or use latest), and the script will pull everything and import it.
 
-### Development → Production
+### Any Environment → Any Environment
 
-1. On development machine:
-   ```bash
-   ./concrete-cms-sync.sh push
-   ```
-   (Note: This pushes to Git, but typically you'd pull from production, not push to it)
-
-2. On production server:
-   ```bash
-   ./concrete-cms-sync.sh pull
-   ```
-   Select a snapshot and pull the changes.
+The script is environment-agnostic. You can:
+- Push from any environment to Git
+- Pull from Git to any environment
+- Migrate between any two environments using Git as the intermediary
+- Create snapshots at any point for rollback or migration purposes
 
 ## Requirements
 

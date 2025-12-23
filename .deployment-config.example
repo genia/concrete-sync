@@ -6,12 +6,8 @@
 # This should be an absolute path
 SITE_PATH=""  # e.g., /home/user/site or /var/www/html
 
-# REQUIRED: Environment type - set to "prod" on production server, "dev" on development machine
-ENVIRONMENT=""  # Options: "prod" or "dev"
-
 # Database credentials (for the database on THIS host)
-# On dev: these access your local development database
-# On production: these access the production database
+# These credentials access the database for the current environment
 # WARNING: This file may contain sensitive information - do not commit to Git!
 DB_HOSTNAME=""  # Database hostname (e.g., localhost or mysql.example.com)
 DB_DATABASE=""  # Database name

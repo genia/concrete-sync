@@ -35,24 +35,23 @@ We provide a unified deployment script that handles syncing in both directions:
 
 #### Unified Deployment Script (`concrete-cms-sync.sh`)
 
-This script handles bidirectional syncing between production and development using Git as the intermediary:
+This script handles bidirectional syncing between any environments using Git as the intermediary:
 
-**When run on production server** (ENVIRONMENT=prod):
-- Exports production database and pushes to Git
+**Push mode** (`./concrete-cms-sync.sh push`):
+- Exports database and pushes to Git
 - Pushes uploaded files (images, documents) to Git
 - Pushes config files (themes, blocks, packages) to Git
-- Creates snapshot tags for each sync operation
+- Creates unified snapshot tags
 
-**When run on development machine** (ENVIRONMENT=dev):
-- Pulls database from Git and imports to local dev database
-- Pulls uploaded files from Git to local development
-- Pulls config files from Git to local development
+**Pull mode** (`./concrete-cms-sync.sh pull`):
+- Pulls database from Git and imports to local database
+- Pulls uploaded files from Git
+- Pulls config files from Git
 - Installs Composer dependencies
 - Clears caches
 
 **Setup:**
 1. Edit `.deployment-config` and configure:
-   - `ENVIRONMENT` - Set to `prod` on production server, `dev` on development machine
    - `FILES_GIT_REPO` - Git repository for syncing files, database, and configs
    - `SITE_PATH` - Path to your Concrete CMS site root
    - Database credentials (DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD)
