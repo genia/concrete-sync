@@ -77,7 +77,7 @@ fi
 
 # Functions
 print_step() {
-    echo -e "\n${GREEN}==> $1${NC}\n"
+    echo -e "\n${GREEN}==> $1${NC}\n" >&2
 }
 
 print_warning() {
@@ -85,7 +85,7 @@ print_warning() {
 }
 
 print_error() {
-    echo -e "${RED}Error: $1${NC}"
+    echo -e "${RED}Error: $1${NC}" >&2
 }
 
 # Check if running on production server directly
@@ -349,27 +349,81 @@ pull_database_from_git() {
     fi
     mkdir -p "${DB_TEMP_DIR}"
     
-    cd "${DB_TEMP_DIR}"
-    git init
-    git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+    cd "${DB_TEMP_DIR}" || {
+        print_error "Failed to change to temp directory: ${DB_TEMP_DIR}"
+        return 1
+    }
     
-    git fetch origin "${FILES_GIT_BRANCH}"
-    git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+    # All git commands must send ALL output (stdout and stderr) to stderr to avoid interfering with stdout capture
+    # This ensures only the file path is captured, not git command output
+    # Pattern: { command 2>&1; } >&2 redirects both stdout and stderr to stderr
+    { git init 2>&1; } >&2 || {
+        print_error "Failed to initialize Git repository"
+        return 1
+    }
+    
+    { git remote add origin "${FILES_GIT_REPO}" 2>&1; } >&2 || { git remote set-url origin "${FILES_GIT_REPO}" 2>&1; } >&2 || {
+        print_error "Failed to set Git remote: ${FILES_GIT_REPO}"
+        return 1
+    }
+    
+    # Fetch from Git repository (send all output to stderr)
+    if ! { git fetch origin "${FILES_GIT_BRANCH}" 2>&1; } >&2; then
+        print_error "Failed to fetch from Git repository"
+        print_error "Repository: ${FILES_GIT_REPO}"
+        print_error "Branch: ${FILES_GIT_BRANCH}"
+        print_error "Make sure the repository exists and you have access"
+        return 1
+    fi
+    
+    # Checkout the branch (send all output to stderr)
+    if ! ({ git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>&1; } >&2) && ! ({ git checkout "${FILES_GIT_BRANCH}" 2>&1; } >&2); then
+        print_error "Failed to checkout branch: ${FILES_GIT_BRANCH}"
+        print_error "Make sure the branch exists in the repository"
+        return 1
+    fi
+    
+    # Check if database directory exists
+    if [ ! -d "database" ]; then
+        print_error "No 'database' directory found in Git repository"
+        print_error "Make sure database has been exported and pushed to Git from production server"
+        print_error "Expected path in repo: database/latest.sql.gz or database/production_db_*.sql.gz"
+        return 1
+    fi
     
     # Find the latest database file (use absolute path)
     if [ -f "database/latest.sql.gz" ]; then
         DB_FILE="${DB_TEMP_DIR}/database/latest.sql.gz"
-        echo "✓ Database pulled from Git: ${DB_FILE}"
-        echo "${DB_FILE}"
+        if [ ! -f "${DB_FILE}" ]; then
+            print_error "Database file not found: ${DB_FILE}"
+            return 1
+        fi
+        echo "✓ Database pulled from Git: ${DB_FILE}" >&2
+        echo -n "${DB_FILE}"  # Only file path to stdout (no newline)
     elif [ -n "$(find database/ -name "production_db_*.sql.gz" -type f 2>/dev/null | head -1)" ]; then
         # Find the most recent database file
         DB_FILE_RELATIVE=$(find database/ -name "production_db_*.sql.gz" -type f | sort -r | head -1)
+        if [ -z "$DB_FILE_RELATIVE" ]; then
+            print_error "No database files found in database/ directory"
+            return 1
+        fi
         DB_FILE="${DB_TEMP_DIR}/${DB_FILE_RELATIVE}"
-        echo "✓ Database pulled from Git: ${DB_FILE}"
-        echo "${DB_FILE}"
+        if [ ! -f "${DB_FILE}" ]; then
+            print_error "Database file not found: ${DB_FILE}"
+            return 1
+        fi
+        echo "✓ Database pulled from Git: ${DB_FILE}" >&2
+        echo -n "${DB_FILE}"  # Only file path to stdout (no newline)
     else
         print_error "No database file found in Git repository"
         print_error "Make sure database has been exported and pushed to Git from production server"
+        print_error "Expected files: database/latest.sql.gz or database/production_db_*.sql.gz"
+        print_error "Current directory contents:"
+        ls -la . 2>/dev/null || true
+        if [ -d "database" ]; then
+            echo "Database directory contents:"
+            ls -la database/ 2>/dev/null || true
+        fi
         return 1
     fi
 }
@@ -706,6 +760,9 @@ clear_caches() {
 
 # Main sync flow
 main() {
+    # Setup file descriptor 3 to duplicate stderr for database pull
+    exec 3>&2
+    
     if is_running_on_production; then
         print_step "Running on production server - pushing files to Git for dev sync"
     else
@@ -749,11 +806,33 @@ main() {
         else
             # Running from dev - pull from Git and import
             print_step "Syncing database from production to dev via Git..."
-            DB_FILE=$(pull_database_from_git)
-            if [ -n "$DB_FILE" ] && [ -f "$DB_FILE" ]; then
+            # Call function - errors go to stderr (visible), file path to stdout (captured)
+            DB_FILE=$(pull_database_from_git 2>&3)
+            EXIT_CODE=$?
+            # Restore stderr
+            exec 3>&2
+            # Trim only trailing newlines/carriage returns from the captured path (preserve spaces in path)
+            DB_FILE=$(printf '%s' "$DB_FILE" | sed 's/[\r\n]*$//')
+            
+            if [ $EXIT_CODE -eq 0 ] && [ -n "$DB_FILE" ]; then
+                # Verify file exists
+                if [ ! -f "$DB_FILE" ]; then
+                    print_error "Database file path returned but file not found: '${DB_FILE}'"
+                    print_error "File path length: ${#DB_FILE}"
+                    print_error "Directory exists: $([ -d "$(dirname "$DB_FILE" 2>/dev/null)" ] && echo 'yes' || echo 'no')"
+                    print_error "Directory contents:"
+                    ls -la "$(dirname "$DB_FILE" 2>/dev/null)" 2>/dev/null || echo "Cannot list directory"
+                    return 1
+                fi
                 import_database "${DB_FILE}"
             else
-                print_error "Failed to pull database from Git"
+                if [ $EXIT_CODE -ne 0 ]; then
+                    print_error "Failed to pull database from Git (exit code: $EXIT_CODE)"
+                elif [ -z "$DB_FILE" ]; then
+                    print_error "Failed to pull database from Git - no file path returned"
+                    print_error "Captured output was empty or whitespace only"
+                fi
+                return 1
             fi
         fi
     else
