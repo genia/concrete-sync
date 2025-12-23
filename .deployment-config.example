@@ -9,11 +9,6 @@ SITE_PATH=""  # e.g., /home/user/site or /var/www/html
 # REQUIRED: Environment type - set to "prod" on production server, "dev" on development machine
 ENVIRONMENT=""  # Options: "prod" or "dev"
 
-# Remote server configuration (for deploy-to-production.sh when running from dev)
-REMOTE_HOST=""  # e.g., user@example.com
-REMOTE_PATH=""  # e.g., /var/www/html (path to site on production server)
-REMOTE_USER=""  # Optional: SSH user (will be combined with REMOTE_HOST if not included)
-
 # Database credentials (for the database on THIS host)
 # On dev: these access your local development database
 # On production: these access the production database

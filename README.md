@@ -127,8 +127,7 @@ This Concrete CMS site requires special handling for deployment due to database 
 **For complete deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md)**
 
 Quick reference:
-- **Deploy to production:** `./deploy-to-production.sh` (configure REMOTE_HOST and REMOTE_PATH first)
-- **Sync from production:** `./deploy-from-production.sh`
+- **Sync between environments:** `./concrete-cms-sync.sh` (handles both directions via Git)
 - **Backup database:** `./backup-database.sh [dev|prod]`
 - **Setup Git for files:** `./setup-files-git.sh` (recommended for file syncing)
 
@@ -136,13 +135,10 @@ The deployment process handles:
 - Database export/import
 - Composer dependency installation
 - Asset building
-- File synchronization (with Git, zip, or rsync methods)
+- File synchronization via Git
 - Cache clearing
 
-**File Syncing:** The scripts support three methods for syncing uploaded files:
-- **Git** (default, recommended) - Uses Git as intermediary for fast, incremental, versioned transfers
-- **Zip** - Fast brute-force transfer for large file sets
-- **Rsync** - Direct incremental sync
+**File Syncing:** All file syncing uses Git exclusively for versioned, incremental transfers.
 
 ## Free marketplace addons
 

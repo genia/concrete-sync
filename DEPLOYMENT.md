@@ -31,55 +31,44 @@ Based on `.gitignore` files, the following are excluded:
 
 ### Method 1: Automated Scripts (Recommended)
 
-We provide two deployment scripts:
+We provide a unified deployment script that handles syncing in both directions:
 
-#### Deploy to Production (`deploy-to-production.sh`)
+#### Unified Deployment Script (`concrete-cms-sync.sh`)
 
-This script handles:
-- Database export from dev
-- Asset building
-- File synchronization via rsync
-- Composer dependency installation on server
-- Optional database import to production
-- Cache clearing
+This script handles bidirectional syncing between production and development using Git as the intermediary:
+
+**When run on production server** (ENVIRONMENT=prod):
+- Exports production database and pushes to Git
+- Pushes uploaded files (images, documents) to Git
+- Pushes config files (themes, blocks, packages) to Git
+- Creates snapshot tags for each sync operation
+
+**When run on development machine** (ENVIRONMENT=dev):
+- Pulls database from Git and imports to local dev database
+- Pulls uploaded files from Git to local development
+- Pulls config files from Git to local development
+- Installs Composer dependencies
+- Clears caches
 
 **Setup:**
-1. Edit `deploy-to-production.sh` and configure:
-   - `REMOTE_HOST` - Your production server SSH address
-   - `REMOTE_PATH` - Path to your site on the server
+1. Edit `.deployment-config` and configure:
+   - `ENVIRONMENT` - Set to `prod` on production server, `dev` on development machine
+   - `FILES_GIT_REPO` - Git repository for syncing files, database, and configs
+   - `SITE_PATH` - Path to your Concrete CMS site root
+   - Database credentials (DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD)
 
 2. Make the script executable:
    ```bash
-   chmod +x deploy-to-production.sh
+   chmod +x concrete-cms-sync.sh
    ```
 
-3. Run the deployment:
-   ```bash
-   ./deploy-to-production.sh
-   ```
-
-#### Sync from Production (`deploy-from-production.sh`)
-
-This script pulls production data back to dev:
-- Pulls code files from production
-- Exports production database
-- Imports to local development database
-- Installs dependencies
-- Syncs uploaded files (optional)
-
-**Setup:**
-1. Edit `deploy-from-production.sh` and configure:
-   - `REMOTE_HOST` - Your production server SSH address
-   - `REMOTE_PATH` - Path to your site on the server
-
-2. Make the script executable:
-   ```bash
-   chmod +x deploy-from-production.sh
-   ```
+3. Run the script:
+   - **On production:** `./concrete-cms-sync.sh push` to push files/database to Git
+   - **On dev:** `./concrete-cms-sync.sh pull` to pull files/database from Git
 
 3. Run the sync:
    ```bash
-   ./deploy-from-production.sh
+   ./concrete-cms-sync.sh push  # or 'pull' on dev
    ```
 
 ### Method 2: Manual Deployment
@@ -127,10 +116,7 @@ mysql -u[user] -p[database] < backup.sql
 
 #### Step 4: Sync Uploaded Files
 
-```bash
-# Sync files directory
-rsync -avz public/application/files/ user@production:/path/to/site/public/application/files/
-```
+Files are synced automatically via Git when using the `concrete-cms-sync.sh` script.
 
 #### Step 5: Configure Environment
 
@@ -247,7 +233,7 @@ The `public/application/files` directory contains:
 Both deployment scripts include uploaded file syncing. You can control the behavior by setting `SYNC_UPLOADED_FILES` in the script:
 
 ```bash
-# In deploy-to-production.sh or deploy-from-production.sh
+# In concrete-cms-sync.sh
 SYNC_UPLOADED_FILES="ask"  # Options: auto, ask, skip
 ```
 
@@ -257,38 +243,19 @@ SYNC_UPLOADED_FILES="ask"  # Options: auto, ask, skip
 
 ### Transfer Method
 
-For uploaded files, you can choose between three transfer methods:
+All file syncing now uses Git exclusively. The script automatically:
+- Pushes files to Git when run on production
+- Pulls files from Git when run on development
 
+This provides versioning, incremental updates, and eliminates the need for SSH file transfers.
+
+**Setup:** Configure `FILES_GIT_REPO` in `.deployment-config`:
 ```bash
-# In deploy-to-production.sh or deploy-from-production.sh
-UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
+FILES_GIT_REPO="git@github.com:user/files-repo.git"  # Or any Git URL
+FILES_GIT_BRANCH="main"  # Branch to use
 ```
 
-- **`git`** (default) - Uses a Git repository as intermediary. **Best of both worlds:**
-  - Fast incremental syncs (only changed files transferred)
-  - Git's compression reduces transfer size
-  - Version history of all file changes
-  - Works efficiently in both directions
-  - Handles large file sets well
-  - Requires a Git repository (can be separate repo or branch)
-  
-  **Setup:** Configure `FILES_GIT_REPO` in the script:
-  ```bash
-  FILES_GIT_REPO="git@github.com:user/files-repo.git"  # Or any Git URL
-  FILES_GIT_BRANCH="main"  # Branch to use
-  ```
-
-- **`zip`** - Creates a zip archive, transfers it, then extracts. Faster for large file sets because:
-  - Single file transfer is more efficient than thousands of small files
-  - Compression reduces transfer size
-  - Less network overhead
-  - Better for initial deployments or when many files have changed
-
-- **`rsync`** - Direct incremental sync that only transfers changed files. Better when:
-  - Only a few files have changed
-  - You want to preserve file permissions exactly
-  - You're doing frequent small updates
-  - You don't want to set up a Git repository
+**Note:** The first sync may take longer as it uploads all files. Subsequent syncs are incremental.
 
 ### Setting Up Git Method
 
@@ -317,7 +284,7 @@ This will:
 
 2. **Configure the scripts:**
    ```bash
-   # In deploy-to-production.sh and deploy-from-production.sh
+   # In concrete-cms-sync.sh
    FILES_GIT_REPO="git@github.com:user/files-repo.git"
    FILES_GIT_BRANCH="main"
    ```
@@ -337,21 +304,13 @@ This will:
 
 ### Manual Sync
 
-If you need to sync files manually:
-
-```bash
-# Dev to Production
-rsync -avz --progress public/application/files/ user@production:/path/to/site/public/application/files/
-
-# Production to Dev
-rsync -avz --progress user@production:/path/to/site/public/application/files/ public/application/files/
-```
+Files are synced automatically via Git when using the `concrete-cms-sync.sh` script.
 
 ### Important Notes
 
-1. **File Size:** For large file sets, the sync may take time. The scripts use `--progress` to show transfer status.
+1. **File Size:** For large file sets, the sync may take time. Git will show progress during transfer.
 
-2. **Thumbnails:** Thumbnails are included in the sync. If you want to exclude them (they can be regenerated), you can modify the rsync command to exclude the thumbnails directory.
+2. **Thumbnails:** Thumbnails are included in the sync. They can be regenerated if needed.
 
 3. **CDN/External Storage:** If you're using a CDN or external file storage (like S3), you may want to set `SYNC_UPLOADED_FILES="skip"` since files are stored elsewhere.
 

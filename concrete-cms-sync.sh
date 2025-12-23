@@ -1,8 +1,10 @@
 #!/bin/bash
 
-# Concrete CMS Deployment Script: Production to Dev
-# This script pulls the latest from production to your development environment
-# Use this to sync production data and files back to dev
+# Concrete CMS Deployment Script: Bidirectional Sync via Git
+# This script syncs data between production and development environments using Git
+# Usage: ./concrete-cms-sync.sh [push|pull]
+#   push - Push files/database from current environment to Git (for syncing to other environment)
+#   pull - Pull files/database from Git to current environment (from other environment)
 
 set -e  # Exit on error
 
@@ -19,15 +21,13 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # Default values (can be overridden by .deployment-config or environment variables)
 # SITE_PATH is the path to the Concrete CMS site root (where composer.json, public/, etc. are)
 SITE_PATH=""  # REQUIRED: e.g., /var/www/html or /home/user/site
-REMOTE_HOST=""  # e.g., user@example.com (only needed when running from dev)
-REMOTE_PATH=""  # e.g., /var/www/html (path to site on remote server)
-REMOTE_USER=""  # SSH user (combined with REMOTE_HOST if needed)
 SYNC_UPLOADED_FILES="auto"  # Options: auto, ask, skip
 FILES_GIT_REPO=""  # REQUIRED: e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 SYNC_DATABASE="auto"  # Options: auto, skip
 COMPOSER_DIR=""  # Directory containing composer.phar (e.g., /usr/local/bin or /opt/composer)
 ENVIRONMENT=""  # REQUIRED: "prod" or "dev" - set to "prod" on production server, "dev" on development machine
+SYNC_DIRECTION=""  # Will be set from command-line argument: "push" or "pull"
 # DB credentials will be loaded from .deployment-config
 # On dev: uses local dev database credentials
 # On production: uses production database credentials
@@ -40,9 +40,6 @@ fi
 
 # Environment variables override config file values
 SITE_PATH="${SITE_PATH:-}"
-REMOTE_HOST="${REMOTE_HOST:-}"
-REMOTE_PATH="${REMOTE_PATH:-}"
-REMOTE_USER="${REMOTE_USER:-}"
 SYNC_UPLOADED_FILES="${SYNC_UPLOADED_FILES:-auto}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
@@ -69,11 +66,6 @@ if [ -z "$SITE_PATH" ] && [ -n "${PROJECT_DIR:-}" ]; then
 fi
 
 DB_BACKUP_DIR="${SITE_PATH}/backups"
-
-# If REMOTE_USER is set but REMOTE_HOST doesn't include user, combine them
-if [ -n "$REMOTE_USER" ] && [ -n "$REMOTE_HOST" ] && [[ ! "$REMOTE_HOST" == *"@"* ]]; then
-    REMOTE_HOST="${REMOTE_USER}@${REMOTE_HOST}"
-fi
 
 # Functions
 print_step() {
@@ -111,6 +103,67 @@ is_running_on_production() {
     return 1
 }
 
+# Print deployment plan banner
+print_deployment_plan() {
+    local direction="$1"
+    
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════════════════════"
+    echo "                    DEPLOYMENT PLAN - ${direction^^}"
+    echo "═══════════════════════════════════════════════════════════════════════════════"
+    echo ""
+    echo "Environment: ${ENVIRONMENT:-not set}"
+    echo "Site Path: ${SITE_PATH:-not set}"
+    echo "Git Repository: ${FILES_GIT_REPO:-not set}"
+    echo "Git Branch: ${FILES_GIT_BRANCH:-main}"
+    echo ""
+    
+    if [ "$direction" = "push" ]; then
+        echo "Actions to be performed:"
+        if [ "$SYNC_DATABASE" = "auto" ]; then
+            if [ -n "${DB_HOSTNAME:-}" ] && [ -n "${DB_DATABASE:-}" ]; then
+                echo "  ✓ Export database from: ${DB_HOSTNAME}/${DB_DATABASE}"
+            else
+                echo "  ✓ Export database (credentials from config)"
+            fi
+            echo "  ✓ Push database to Git repository"
+        else
+            echo "  ⊘ Skip database sync (SYNC_DATABASE=skip)"
+        fi
+        echo "  ✓ Push config files (config/, themes/, blocks/, packages/) to Git"
+        if [ "$SYNC_UPLOADED_FILES" != "skip" ]; then
+            echo "  ✓ Push uploaded files (public/application/files/) to Git"
+        else
+            echo "  ⊘ Skip uploaded files (SYNC_UPLOADED_FILES=skip)"
+        fi
+        echo "  ✓ Create snapshot tags for each sync operation"
+    else
+        echo "Actions to be performed:"
+        if [ "$SYNC_DATABASE" = "auto" ]; then
+            echo "  ✓ Pull database from Git repository"
+            if [ -n "${DB_HOSTNAME:-}" ] && [ -n "${DB_DATABASE:-}" ]; then
+                echo "  ✓ Import database to: ${DB_HOSTNAME}/${DB_DATABASE}"
+            else
+                echo "  ✓ Import database (credentials from config)"
+            fi
+        else
+            echo "  ⊘ Skip database sync (SYNC_DATABASE=skip)"
+        fi
+        echo "  ✓ Pull config files (config/, themes/, blocks/, packages/) from Git"
+        if [ "$SYNC_UPLOADED_FILES" != "skip" ]; then
+            echo "  ✓ Pull uploaded files (public/application/files/) from Git"
+        else
+            echo "  ⊘ Skip uploaded files (SYNC_UPLOADED_FILES=skip)"
+        fi
+        echo "  ✓ Install Composer dependencies"
+        echo "  ✓ Clear Concrete CMS caches"
+    fi
+    
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════════════════════"
+    echo ""
+}
+
 # Setup Git credential caching for this script session
 setup_git_credentials() {
     # Only needed for HTTPS URLs (SSH uses keys, no prompts)
@@ -138,6 +191,28 @@ setup_git_credentials() {
     echo ""
     echo "Tip: To avoid prompts entirely, use SSH URLs (git@github.com:user/repo.git)"
     echo "     or set up SSH keys for your GitHub account"
+}
+
+# Create and push a Git tag for this snapshot
+create_snapshot_tag() {
+    local tag_type="${1:-sync}"  # db, files, config, or sync (default)
+    local timestamp=$(date +%Y%m%d-%H%M%S)
+    local tag_name="${tag_type}-${timestamp}"
+    
+    # Create the tag (suppress output)
+    git tag -f "${tag_name}" >/dev/null 2>&1 || {
+        print_warning "Could not create tag: ${tag_name}" >&2
+        return 1
+    }
+    
+    # Push the tag to remote (suppress output)
+    git push origin "${tag_name}" --force >/dev/null 2>&1 || {
+        print_warning "Could not push tag to remote: ${tag_name}" >&2
+        return 1
+    }
+    
+    echo "${tag_name}"  # Return tag name via stdout
+    return 0
 }
 
 # Check prerequisites
@@ -190,90 +265,34 @@ check_prerequisites() {
     
     command -v mysql >/dev/null 2>&1 || { print_error "mysql client is required but not installed"; exit 1; }
     
-    # Determine if we're on production or dev based on ENVIRONMENT
+    # FILES_GIT_REPO is required (we use Git exclusively)
+    if [ -z "$FILES_GIT_REPO" ]; then
+        print_error "FILES_GIT_REPO must be set in .deployment-config"
+        print_error "This script uses Git exclusively for all syncing operations"
+        exit 1
+    fi
+    
+    # Determine environment
     if is_running_on_production; then
         # Running on production server
         PROD_PATH="${SITE_PATH}"
         echo "✓ Running on production server (ENVIRONMENT=${ENVIRONMENT})"
         echo "  Site path: ${PROD_PATH}"
-    elif [ -n "$REMOTE_HOST" ]; then
-        # REMOTE_HOST is set, so we're running from dev
-        if [ -z "$REMOTE_PATH" ]; then
-            print_error "REMOTE_PATH must be set when REMOTE_HOST is set"
-            print_error "Set in .deployment-config or as environment variable:"
-            print_error "  REMOTE_PATH=/path/to/site"
-            exit 1
-        fi
-        PROD_PATH="${REMOTE_PATH}"
-        echo "✓ Running from dev machine"
-        echo "  Local site path: ${SITE_PATH}"
-        echo "  Production server: ${REMOTE_HOST}:${PROD_PATH}"
-        
-        # Check if using Git method for database
-        USE_GIT_FOR_DB=false
-        if [ -n "$FILES_GIT_REPO" ] && [ "$SYNC_DATABASE" = "auto" ]; then
-            USE_GIT_FOR_DB=true
-        fi
     else
-        # REMOTE_HOST not set - check if we're on production
-        if [ "${RUNNING_ON_PRODUCTION:-}" = "true" ] || [ "$REMOTE_PATH" = "$SITE_PATH" ]; then
-            # Running on production server
-            PROD_PATH="${SITE_PATH}"
-            echo "✓ Running directly on production server"
-            echo "  Site path: ${PROD_PATH}"
-        else
-            # REMOTE_HOST not set - using Git method
-            USE_GIT_FOR_DB=false
-            if [ -n "$FILES_GIT_REPO" ] && [ "$SYNC_DATABASE" = "auto" ]; then
-                USE_GIT_FOR_DB=true
-            fi
-            
-            if [ -z "$FILES_GIT_REPO" ]; then
-                print_error "FILES_GIT_REPO must be set in .deployment-config"
-                exit 1
-            fi
-            
-            if [ "$USE_GIT_FOR_DB" = "true" ]; then
-                echo "✓ Using Git method for both files and database (no REMOTE_HOST needed)"
-            else
-                echo "✓ Using Git method for files"
-            fi
-            PROD_PATH="${REMOTE_PATH:-${SITE_PATH}}"
-        fi
+        # Running on dev machine
+        PROD_PATH="${SITE_PATH}"
+        echo "✓ Running on development machine (ENVIRONMENT=${ENVIRONMENT})"
+        echo "  Site path: ${SITE_PATH}"
     fi
     
     # Validate DB credentials are present (from .deployment-config)
-    # On production: always need DB credentials
-    # On dev: only need DB credentials if importing database (not when using Git method)
-    if is_running_on_production; then
-        # Always need DB credentials on production
+    # Always need DB credentials for database operations
+    if [ "$SYNC_DATABASE" = "auto" ]; then
         if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
             print_error "Database credentials not found in .deployment-config file"
             print_error "Required: DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD"
             print_error "Set them in ${CONFIG_FILE} or as environment variables"
             exit 1
-        fi
-    else
-        # On dev: check if we need DB credentials
-        USE_GIT_FOR_DB=false
-        if [ "$UPLOADED_FILES_METHOD" = "git" ] && [ -n "$FILES_GIT_REPO" ] && [ "$SYNC_DATABASE" = "auto" ] && [ -z "$REMOTE_HOST" ]; then
-            USE_GIT_FOR_DB=true
-        fi
-        
-        if [ "$USE_GIT_FOR_DB" != "true" ] && [ "$SYNC_DATABASE" = "auto" ]; then
-            # Need DB credentials for import (when not using Git method)
-            if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
-                print_error "Database credentials not found in .deployment-config file"
-                print_error "Required: DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD"
-                print_error "Set them in ${CONFIG_FILE} or as environment variables"
-                exit 1
-            fi
-        elif [ "$USE_GIT_FOR_DB" = "true" ]; then
-            # Using Git method - only need local dev DB credentials for import
-            if [ -z "${DB_HOSTNAME:-}" ] || [ -z "${DB_DATABASE:-}" ] || [ -z "${DB_USERNAME:-}" ] || [ -z "${DB_PASSWORD:-}" ]; then
-                print_warning "Local database credentials not found - will be needed for import"
-                print_warning "Set DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD in ${CONFIG_FILE}"
-            fi
         fi
     fi
     
@@ -334,7 +353,13 @@ export_production_database_to_git() {
             git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
         fi
         git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
-        echo "✓ Database exported and pushed to Git"
+        # Create and push snapshot tag
+        TAG_NAME=$(create_snapshot_tag "db")
+        if [ -n "$TAG_NAME" ]; then
+            echo "✓ Database exported and pushed to Git (tagged: ${TAG_NAME})"
+        else
+            echo "✓ Database exported and pushed to Git"
+        fi
     else
         echo "No database changes to sync"
     fi
@@ -450,30 +475,11 @@ export_production_database() {
     
     echo "Exporting database..."
     
-    if is_running_on_production; then
-        # Running on production server - use DB credentials from production .deployment-config
-        echo "  Host: ${DB_HOSTNAME}"
-        echo "  Database: ${DB_DATABASE}"
-        echo "  User: ${DB_USERNAME}"
-        mysqldump --no-tablespaces -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}.gz"
-    elif [ -n "$REMOTE_HOST" ]; then
-        # Running from dev - need to export from production via SSH
-        # Production .deployment-config has production DB credentials
-        # The deployment config is in the concrete-sync directory (same level as site, or find it)
-        # Try common locations: ../concrete-sync or ~/concrete-sync
-        echo "  Connecting to production server: ${REMOTE_HOST}"
-        echo "  Will use production database credentials from production .deployment-config file"
-        ssh "${REMOTE_HOST}" \
-            "CONFIG_DIR=\$(find ~ -name '.deployment-config' -type f 2>/dev/null | head -1 | xargs dirname 2>/dev/null) || CONFIG_DIR=\$(dirname ${REMOTE_PATH})/concrete-sync; \
-             [ -f \"\${CONFIG_DIR}/.deployment-config\" ] && cd \"\${CONFIG_DIR}\" && source .deployment-config && \
-             mysqldump --no-tablespaces -h\${DB_HOSTNAME} -u\${DB_USERNAME} -p\${DB_PASSWORD} \${DB_DATABASE}" \
-            | gzip > "${DB_FILE}.gz"
-    else
-        # No REMOTE_HOST - cannot export from production without SSH access
-        print_error "Cannot export database from production without REMOTE_HOST"
-        print_error "Either set REMOTE_HOST in config or run this script on production server"
-        return 1
-    fi
+    # Use DB credentials from .deployment-config
+    echo "  Host: ${DB_HOSTNAME}"
+    echo "  Database: ${DB_DATABASE}"
+    echo "  User: ${DB_USERNAME}"
+    mysqldump --no-tablespaces -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}.gz"
     
     echo "✓ Database exported from production to ${DB_FILE}.gz"
     echo "${DB_FILE}.gz"
@@ -535,10 +541,10 @@ import_database() {
     echo "✓ Database imported to local development"
 }
 
-# Pull uploaded files from production via Git
+# Sync uploaded files via Git (handles both push and pull)
 # This syncs all uploaded images, documents, and thumbnails from public/application/files/
 pull_uploaded_files() {
-    print_step "Pulling uploaded files (images, documents, thumbnails) from production..."
+    print_step "Syncing uploaded files (images, documents, thumbnails)..."
     
     # Check sync behavior setting
     if [ "$SYNC_UPLOADED_FILES" = "skip" ]; then
@@ -566,8 +572,8 @@ pull_uploaded_files() {
         
         echo "Syncing uploaded files via Git..."
         
-        # Push from production server to Git
-        if is_running_on_production; then
+        # Push or pull based on SYNC_DIRECTION
+        if [ "$SYNC_DIRECTION" = "push" ]; then
             # Running on production server directly
             PROD_FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
             
@@ -603,6 +609,11 @@ pull_uploaded_files() {
                     git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
                 fi
                 git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
+                # Create and push snapshot tag
+                TAG_NAME=$(create_snapshot_tag "files")
+                if [ -n "$TAG_NAME" ]; then
+                    echo "  Tagged snapshot: ${TAG_NAME}"
+                fi
             else
                 # Even if no changes, pull to stay in sync
                 if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
@@ -611,8 +622,8 @@ pull_uploaded_files() {
             fi
             echo "✓ Files pushed to Git"
         else
-            # Running from dev - pull files from Git
-            echo "Pulling files from Git to local development..."
+            # Pull direction - pull files from Git
+            echo "Pulling files from Git..."
             FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
             
             # Clean up and recreate to ensure clean state
@@ -687,10 +698,10 @@ pull_uploaded_files() {
     fi
 }
 
-# Pull config files from production via Git
+# Sync config files via Git (handles both push and pull)
 # This syncs Concrete CMS configuration files (config/, themes/, blocks/, packages/, etc.)
 pull_config_files() {
-    print_step "Pulling config files from production via Git..."
+    print_step "Syncing config files via Git..."
     
     if [ -z "$FILES_GIT_REPO" ]; then
         echo "FILES_GIT_REPO not set - skipping config file sync via Git"
@@ -698,8 +709,8 @@ pull_config_files() {
     fi
     
     if is_running_on_production; then
-        # Running on production - push config files to Git
-        echo "Pushing config files from production to Git..."
+        # Push direction - push config files to Git
+        echo "Pushing config files to Git..."
         
         CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
         
@@ -744,13 +755,19 @@ pull_config_files() {
                 git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
             fi
             git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
-            echo "✓ Config files pushed to Git"
+            # Create and push snapshot tag
+            TAG_NAME=$(create_snapshot_tag "config")
+            if [ -n "$TAG_NAME" ]; then
+                echo "✓ Config files pushed to Git (tagged: ${TAG_NAME})"
+            else
+                echo "✓ Config files pushed to Git"
+            fi
         else
             echo "No config file changes to sync"
         fi
     else
-        # Running from dev - pull config files from Git
-        echo "Pulling config files from Git to local development..."
+        # Pull direction - pull config files from Git
+        echo "Pulling config files from Git..."
         
         CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
         
@@ -815,16 +832,73 @@ clear_caches() {
 
 # Main sync flow
 main() {
+    # Parse command-line arguments - direction is REQUIRED
+    if [ $# -eq 0 ]; then
+        print_error "Direction argument is required"
+        echo ""
+        echo "Usage: $0 [push|pull]"
+        echo ""
+        echo "  push  - Push files/database from current environment to Git"
+        echo "  pull  - Pull files/database from Git to current environment"
+        echo ""
+        echo "Use --help for more information"
+        exit 1
+    fi
+    
+    case "$1" in
+        push|pull)
+            SYNC_DIRECTION="$1"
+            ;;
+        -h|--help)
+            echo "Usage: $0 [push|pull]"
+            echo ""
+            echo "  push  - Push files/database from current environment to Git"
+            echo "  pull  - Pull files/database from Git to current environment"
+            echo ""
+            echo "The direction argument is REQUIRED."
+            exit 0
+            ;;
+        *)
+            print_error "Invalid argument: $1"
+            print_error "Usage: $0 [push|pull]"
+            print_error "Use --help for more information"
+            exit 1
+            ;;
+    esac
+    
+    # Validate direction value
+    if [ "$SYNC_DIRECTION" != "push" ] && [ "$SYNC_DIRECTION" != "pull" ]; then
+        print_error "SYNC_DIRECTION must be 'push' or 'pull', got: ${SYNC_DIRECTION}"
+        exit 1
+    fi
+    
     # Setup file descriptor 3 to duplicate stderr for database pull
     exec 3>&2
     
-    if is_running_on_production; then
-        print_step "Running on production server - pushing files to Git for dev sync"
-    else
-        print_step "Starting sync from production to dev"
+    # Check prerequisites first (needed to load config values for banner)
+    check_prerequisites
+    
+    # Print deployment plan banner
+    print_deployment_plan "$SYNC_DIRECTION"
+    
+    # Confirmation prompt
+    echo -e "${YELLOW}WARNING: This will modify your site data!${NC}"
+    echo ""
+    read -p "Do you want to proceed with the above plan? (yes/no): " -r
+    echo ""
+    
+    if [[ ! $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
+        echo "Deployment cancelled by user."
+        exit 0
     fi
     
-    check_prerequisites
+    echo ""
+    
+    if [ "$SYNC_DIRECTION" = "push" ]; then
+        print_step "Pushing files and database to Git (direction: push)"
+    else
+        print_step "Pulling files and database from Git (direction: pull)"
+    fi
     
     # Setup Git credential caching to avoid multiple prompts
     if [ -n "$FILES_GIT_REPO" ]; then
@@ -842,8 +916,8 @@ main() {
     # Optionally pull/push uploaded files (function handles both directions)
     pull_uploaded_files
     
-    # Install dependencies (only if running from dev)
-    if ! is_running_on_production; then
+    # Install dependencies (only when pulling)
+    if [ "$SYNC_DIRECTION" = "pull" ]; then
         install_dependencies
     fi
     
@@ -854,13 +928,13 @@ main() {
             exit 1
         fi
         
-        if is_running_on_production; then
-            # Running on production - export and push to Git
+        if [ "$SYNC_DIRECTION" = "push" ]; then
+            # Push direction - export and push to Git
             export_production_database_to_git
-            echo "  This will be imported when you run this script from dev machine"
+            echo "  Database pushed to Git - run 'pull' on target environment to import"
         else
-            # Running from dev - pull from Git and import
-            print_step "Syncing database from production to dev via Git..."
+            # Pull direction - pull from Git and import
+            print_step "Syncing database from Git..."
             # Call function - errors go to stderr (visible), file path to stdout (captured)
             DB_FILE=$(pull_database_from_git 2>&3)
             EXIT_CODE=$?
@@ -891,26 +965,22 @@ main() {
             fi
         fi
     else
-        if is_running_on_production; then
-            echo "Database sync disabled (SYNC_DATABASE=skip)"
-        else
-            echo "Database sync disabled (SYNC_DATABASE=skip)"
-        fi
+        echo "Database sync disabled (SYNC_DATABASE=skip)"
     fi
     
-    # Clear caches (only if running from dev)
-    if ! is_running_on_production; then
+    # Clear caches (only when pulling)
+    if [ "$SYNC_DIRECTION" = "pull" ]; then
         clear_caches
     fi
     
-    if is_running_on_production; then
+    if [ "$SYNC_DIRECTION" = "push" ]; then
         if [ "$SYNC_DATABASE" = "auto" ]; then
-            print_step "Files and database pushed to Git - run this script from dev machine to complete sync"
+            print_step "Files and database pushed to Git - run 'pull' on target environment to complete sync"
         else
-            print_step "Files pushed to Git - run this script from dev machine to complete sync"
+            print_step "Files pushed to Git - run 'pull' on target environment to complete sync"
         fi
     else
-        print_step "Sync from production completed successfully!"
+        print_step "Sync completed successfully! Files and database pulled from Git"
     fi
 }
 
