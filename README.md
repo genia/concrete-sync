@@ -1,157 +1,148 @@
-# Composer Based Skeleton for Concrete sites
+# Concrete CMS Deployment Sync Tools
 
-[![Latest Version on Packagist][ico-version]][link-packagist]
-[![Software License][ico-license]](LICENSE.txt)
-[![Build Status][ico-travis]][link-travis]
-[![Total Downloads][ico-downloads]][link-downloads]
+Tools for syncing Concrete CMS sites between development and production environments using Git as the intermediary.
 
-## Creating a new project
+## Overview
 
-First choose a name for your project. In this example, our project is called "the_oregon_trail"
+This toolkit provides scripts to synchronize Concrete CMS sites between environments (development and production) using Git for all file transfers. All syncing operations are bidirectional and use Git exclusively, eliminating the need for direct SSH file transfers.
 
+## Features
+
+- **Bidirectional syncing** - Push from production to Git, pull from Git to development (or vice versa)
+- **Git-based file transfer** - All files (uploaded files, config files, database dumps) synced via Git
+- **Snapshot tagging** - Automatic tagging of complete site snapshots for easy restoration
+- **Incremental updates** - Only changed files are transferred using rsync
+- **Database syncing** - Export/import MySQL databases with proper handling
+- **Composer integration** - Automatic dependency installation
+- **Interactive tag selection** - Choose specific snapshots or use latest
+
+## Quick Start
+
+1. **Copy the example config file:**
+   ```bash
+   cp .deployment-config.example .deployment-config
+   ```
+
+2. **Edit `.deployment-config`** with your settings:
+   - `ENVIRONMENT` - Set to `prod` on production server, `dev` on development machine
+   - `SITE_PATH` - Path to your Concrete CMS site root
+   - `FILES_GIT_REPO` - Git repository URL for syncing files
+   - Database credentials
+   - Other sync settings
+
+3. **Run the sync script:**
+   ```bash
+   # Push from production to Git
+   ./concrete-cms-sync.sh push
+   
+   # Pull from Git to development
+   ./concrete-cms-sync.sh pull
+   ```
+
+## Scripts
+
+### `concrete-cms-sync.sh`
+
+Main bidirectional sync script. Handles both pushing data to Git and pulling data from Git.
+
+**Usage:**
 ```bash
-$ composer create-project -n concretecms/composer the_oregon_trail
+./concrete-cms-sync.sh [push|pull]
 ```
 
-Now you have the latest version of Concrete and you're ready to install!
+**Push mode** (typically run on production):
+- Exports database to Git
+- Pushes uploaded files to Git
+- Pushes config files (config/, themes/, blocks/, packages/) to Git
+- Creates a unified snapshot tag
 
-Note: This is a skeleton project. So once you create a project, you can install your own VCS and change the README and all that.
+**Pull mode** (typically run on development):
+- Prompts for snapshot selection (latest or specific tag)
+- Pulls database from Git and imports it
+- Pulls uploaded files from Git
+- Pulls config files from Git
+- Installs Composer dependencies
+- Clears caches
 
-## Starting with the Concrete latest develop
+### `backup-database.sh`
 
-First create a new project
+Simple database backup script.
+
+**Usage:**
 ```bash
-$ composer create-project -n concretecms/composer the_oregon_trail
+./backup-database.sh [dev|prod]
 ```
 
-Then navigate into that project and require the `dev-develop` version of `concretecms/core`
+Creates a compressed database backup in the current directory.
+
+### `setup-files-git.sh`
+
+Initial setup script for configuring Git repository for file syncing.
+
+**Usage:**
 ```bash
-$ cd the_oregon_trail
-$ composer require concretecms/core:dev-develop
+./setup-files-git.sh
 ```
 
-## Installing Concrete
+## Configuration
 
-Navigate into your new Concrete project
+All configuration is done via `.deployment-config`. See `.deployment-config.example` for all available options.
 
-```bash
-$ cd the_oregon_trail
-```
+### Key Configuration Variables
 
-and use the interactive install commmand that comes with Concrete's CLI tool
+- `ENVIRONMENT` - `prod` or `dev` (required)
+- `SITE_PATH` - Path to Concrete CMS site root (required)
+- `FILES_GIT_REPO` - Git repository URL for syncing (required)
+- `FILES_GIT_BRANCH` - Git branch to use (default: `main`)
+- `SYNC_DATABASE` - `auto` to sync database, `skip` to skip (default: `auto`)
+- `SYNC_UPLOADED_FILES` - `auto` to sync files, `skip` to skip (default: `auto`)
+- `COMPOSER_DIR` - Directory containing `composer.phar` (if not in PATH)
 
-```bash
-$ ./vendor/bin/concrete c5:install -i
-```
-Follow directions and your site will begin installing!
+## How It Works
 
+1. **Git as Intermediary**: All data (files, database dumps, config) is stored in a Git repository
+2. **Snapshot Tags**: Each complete sync creates a unified tag (`snapshot-YYYY-MM-DD_HH-MM-SS`) marking a point-in-time snapshot
+3. **Incremental Syncs**: Uses rsync to only transfer files that have changed
+4. **Bidirectional**: Same script handles both directions based on the `push`/`pull` argument
 
-Note: You can also run the CLI tool directly with PHP
+## Deployment Workflow
 
-```bash
-$ ./public/concrete/bin/concrete
-```
+### Production → Development
 
-## Install a Concrete package using composer
+1. On production server:
+   ```bash
+   ./concrete-cms-sync.sh push
+   ```
+   This exports the database, pushes files and config to Git, and creates a snapshot tag.
 
-Find the package you'd like to install on [packagist.org](https://packagist.org) (in this case [`concretecms/sample_composer_package`](https://packagist.org/packages/concretecms/sample_composer_package))
+2. On development machine:
+   ```bash
+   ./concrete-cms-sync.sh pull
+   ```
+   Select a snapshot (or use latest), and the script will pull everything and import it.
 
-Note: You can also use composer's repository functionality to manage private packages using composer
+### Development → Production
 
-```bash
-$ composer require concretecms/sample_composer_package
-$ ./vendor/bin/concrete c5:package-install sample_composer_package
-```
+1. On development machine:
+   ```bash
+   ./concrete-cms-sync.sh push
+   ```
+   (Note: This pushes to Git, but typically you'd pull from production, not push to it)
 
-## Compiling JS / CSS assets
-This library uses [Laravel Mix][link-mix]. See [webpack.mix.js][link-webpack-mix-file].
-To build assets:
+2. On production server:
+   ```bash
+   ./concrete-cms-sync.sh pull
+   ```
+   Select a snapshot and pull the changes.
 
-```bash
-npm install
-npm run dev   # Build for development
-npm run hot   # Build with hot reloading enabled (See hot reloading section)
-npm run watch # Build with a watcher that rebuilds when files change
-npm run prod  # Build for production
-```
+## Requirements
 
-### Hot Module Replacement
-Hot module replacement (hot reloading) allows you to write code and instantly see the changes in your browser, without reloading the page.
-In order to use hot reloading with Concrete, you'll want to use the `mix` and `mixAsset` helper functions to wrap your
-js and css urls. These functions make it so that your assets automatically detect hot reloading mode and output the
-appropriate urls, they are safe to use in production:
+- Bash 3.2+
+- Git
+- MySQL client (`mysql`, `mysqldump`)
+- rsync
+- PHP with Composer (or `composer.phar`)
 
-In a page theme:
-```php
-<?php
-use function Concrete5\Composer\mixAsset;
-...
+## For Complete Details
 
-class PageTheme extends Theme
-{
-  public function registerAssets()
-  {
-    $this->requireAsset(mixAsset('/path/to/file.js'));
-  }
-}
-```
-
-```php
-<?php
-use function Concrete5\Composer\mixAsset;
-...
-
-class Controller extends BlockController
-{
-    public function registerViewAssets()
-    {
-        $this->requireAsset(mixAsset('/path/to/js/file.js'));
-        $this->requireAsset(mixAsset('/path/to/css/file.css'));
-    }
-}
-```
-or in a theme template:
-```php
-<?php
-use function Concrete5\Composer\mix;
-?>
-
-<script src='<?= mix('/path/to/your/asset.js') ?>'></script>
-<link href='<?= mix('/path/to/your/asset.css') ?>' />
-```
-
-## Deployment
-
-This Concrete CMS site requires special handling for deployment due to database dependencies and excluded files. 
-
-**For complete deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md)**
-
-Quick reference:
-- **Sync between environments:** `./concrete-cms-sync.sh` (handles both directions via Git)
-- **Backup database:** `./backup-database.sh [dev|prod]`
-- **Setup Git for files:** `./setup-files-git.sh` (recommended for file syncing)
-
-The deployment process handles:
-- Database export/import
-- Composer dependency installation
-- Asset building
-- File synchronization via Git
-- Cache clearing
-
-**File Syncing:** All file syncing uses Git exclusively for versioned, incremental transfers.
-
-## Free marketplace addons
-
-Do you want to install an add-on that is free in the Concrete marketplace, but not on packagist.org? Go to https://composer.concretecms.org/.
-
-[ico-version]: https://img.shields.io/packagist/v/concretecms/composer.svg?style=flat-square
-[ico-license]: https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat-square
-[ico-travis]: https://img.shields.io/travis/concretecms/composer/master.svg?style=flat-square
-[ico-downloads]: https://img.shields.io/packagist/dt/concretecms/composer.svg?style=flat-square
-
-[link-packagist]: https://packagist.org/packages/concretecms/composer
-[link-travis]: https://travis-ci.org/concretecms/composer
-[link-downloads]: https://packagist.org/packages/concretecms/composer
-[link-mix]: https://laravel.com/docs/5.5/mix
-[link-webpack-mix-file]: ./webpack.mix.js
-
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions, component descriptions, and advanced configuration.
