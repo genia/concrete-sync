@@ -353,6 +353,13 @@ select_snapshot_tag() {
     fi
     
     local tag_count=${#tag_array[@]}
+    
+    # Debug: show array contents before display
+    echo "  Debug: About to display tags, tag_count=${tag_count}" >&2
+    for idx in "${!tag_array[@]}"; do
+        echo "  Debug: tag_array[${idx}]='${tag_array[$idx]}'" >&2
+    done
+    
     local page_size=10
     local current_page=0
     local start_idx=0
@@ -368,11 +375,24 @@ select_snapshot_tag() {
         local display_count=0
         for ((i=$start_idx; i<=$end_idx && i<$tag_count; i++)); do
             local tag_num=$((i + 1))
-            if [ -n "${tag_array[$i]}" ]; then
-                echo "  ${tag_num}) ${tag_array[$i]}"
+            local tag_value="${tag_array[$i]}"
+            if [ -n "$tag_value" ]; then
+                echo "  ${tag_num}) ${tag_value}"
                 display_count=$((display_count + 1))
+            else
+                echo "  Debug: tag_array[$i] is empty (tag_num=$tag_num, tag_count=$tag_count)" >&2
             fi
         done
+        
+        # If no tags were displayed but we have tags, show debug info
+        if [ $display_count -eq 0 ] && [ $tag_count -gt 0 ]; then
+            echo "  Debug: No tags displayed but tag_count=$tag_count" >&2
+            echo "  Debug: start_idx=$start_idx, end_idx=$end_idx" >&2
+            echo "  Debug: Array contents:" >&2
+            for idx in "${!tag_array[@]}"; do
+                echo "    tag_array[$idx]='${tag_array[$idx]}'" >&2
+            done
+        fi
         
         # Show paging info
         local total_pages=$(( (tag_count + page_size - 1) / page_size ))
