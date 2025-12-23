@@ -6,7 +6,10 @@
 # This should be an absolute path
 SITE_PATH=""  # e.g., /home/user/site or /var/www/html
 
-# Remote server configuration (for deploy-to-production.sh)
+# REQUIRED: Environment type - set to "prod" on production server, "dev" on development machine
+ENVIRONMENT=""  # Options: "prod" or "dev"
+
+# Remote server configuration (for deploy-to-production.sh when running from dev)
 REMOTE_HOST=""  # e.g., user@example.com
 REMOTE_PATH=""  # e.g., /var/www/html (path to site on production server)
 REMOTE_USER=""  # Optional: SSH user (will be combined with REMOTE_HOST if not included)
@@ -20,15 +23,12 @@ DB_DATABASE=""  # Database name
 DB_USERNAME=""  # Database username
 DB_PASSWORD=""  # Database password (consider using environment variable instead)
 
-# File syncing configuration (for Git method)
-FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
+# File syncing configuration (REQUIRED - Git method only)
+FILES_GIT_REPO=""  # REQUIRED: e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 
 # Uploaded files sync behavior
 SYNC_UPLOADED_FILES="auto"  # Options: auto, ask, skip
-
-# Uploaded files transfer method
-UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
 
 # Database sync behavior
 SYNC_DATABASE="auto"  # Options: auto, skip (auto = sync automatically, skip = never sync)
