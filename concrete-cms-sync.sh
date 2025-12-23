@@ -106,10 +106,11 @@ is_running_on_production() {
 # Print deployment plan banner
 print_deployment_plan() {
     local direction="$1"
+    local direction_upper=$(echo "$direction" | tr '[:lower:]' '[:upper:]')
     
     echo ""
     echo "═══════════════════════════════════════════════════════════════════════════════"
-    echo "                    DEPLOYMENT PLAN - ${direction^^}"
+    echo "                    DEPLOYMENT PLAN - ${direction_upper}"
     echo "═══════════════════════════════════════════════════════════════════════════════"
     echo ""
     echo "Environment: ${ENVIRONMENT:-not set}"
