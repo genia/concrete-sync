@@ -238,9 +238,14 @@ select_snapshot_tag() {
     git init >/dev/null 2>&1
     git remote add origin "${repo_url}" >/dev/null 2>&1 || git remote set-url origin "${repo_url}" >/dev/null 2>&1
     
-    # Fetch tags from remote
+    # Fetch tags from remote (fetch both branch and tags)
+    echo "  Fetching tags from ${repo_url}..."
+    # First fetch the branch
+    git fetch origin "${branch}" >/dev/null 2>&1 || true
+    # Then fetch all tags
     if ! git fetch origin "refs/tags/*:refs/tags/*" >/dev/null 2>&1; then
         print_warning "Could not fetch tags from repository"
+        print_warning "Will use latest from branch instead"
         echo "latest"  # Return "latest" as fallback
         cd - >/dev/null 2>&1
         rm -rf "${temp_dir}"
@@ -255,7 +260,17 @@ select_snapshot_tag() {
     rm -rf "${temp_dir}"
     
     if [ -z "$tags" ]; then
-        echo "No tags found in repository, using latest" >&2
+        echo ""
+        echo "No snapshot tags found in repository." >&2
+        echo ""
+        echo "This could mean:" >&2
+        echo "  - No snapshots have been pushed yet (run 'push' first to create tags)" >&2
+        echo "  - Tags exist but weren't fetched (check repository access)" >&2
+        echo ""
+        echo "Using latest from branch instead." >&2
+        echo ""
+        read -p "Press Enter to continue with latest, or Ctrl+C to cancel..." -r
+        echo ""
         echo "latest"
         return 0
     fi
@@ -263,7 +278,7 @@ select_snapshot_tag() {
     # Display tags to user
     echo ""
     echo "Available snapshots:"
-    echo "  0) latest (most recent)"
+    echo "  0) latest (most recent from branch)"
     local count=1
     for tag in $tags; do
         echo "  ${count}) ${tag}"
