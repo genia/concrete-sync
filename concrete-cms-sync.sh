@@ -910,13 +910,35 @@ pull_config_files() {
                 "${SITE_PATH}/public/application/" "${CONFIG_TEMP_DIR}/application/" 2>/dev/null || true
         fi
         
-        # Also sync public/packages/ (package assets, separate from application/packages/)
-        # Exclude node_modules/ from packages as well
+        # Also sync public/packages/ (package code/assets, separate from application/packages/)
+        # Apply same exclusions as application/ (cache, node_modules, .git objects, etc.)
         if [ -d "${SITE_PATH}/public/packages" ]; then
+            echo "  Syncing public/packages/ directory..."
+            mkdir -p "${CONFIG_TEMP_DIR}/packages"
             rsync -av \
                 --exclude='node_modules' \
                 --exclude='**/node_modules' \
-                "${SITE_PATH}/public/packages/" "${CONFIG_TEMP_DIR}/packages/" 2>/dev/null || true
+                --exclude='cache' \
+                --exclude='config/doctrine/proxies' \
+                --exclude='.git/objects' \
+                --exclude='.git/packed-refs' \
+                --exclude='.git/index' \
+                --exclude='.git/logs' \
+                --exclude='.git/hooks' \
+                --exclude='.git/info' \
+                --include='.git/config' \
+                --include='.git/HEAD' \
+                --include='.git/refs/remotes/origin/**' \
+                --include='.git/refs/heads/**' \
+                --exclude='.git/**' \
+                "${SITE_PATH}/public/packages/" "${CONFIG_TEMP_DIR}/packages/" 2>&1 || true
+            if [ -d "${CONFIG_TEMP_DIR}/packages" ] && [ "$(ls -A "${CONFIG_TEMP_DIR}/packages" 2>/dev/null)" ]; then
+                echo "  ✓ Packages directory synced ($(find "${CONFIG_TEMP_DIR}/packages" -type f | wc -l | tr -d ' ') files)"
+            else
+                echo "  ⚠ Warning: Packages directory is empty or not found"
+            fi
+        else
+            echo "  ⊘ No public/packages/ directory found to sync"
         fi
         
         # Commit and push
@@ -989,19 +1011,37 @@ pull_config_files() {
             fi
         fi
         
-        # Also sync public/packages/ (package assets, separate from application/packages/)
-        # Exclude node_modules/ from packages as well
-        if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
+        # Also sync public/packages/ (package code/assets, separate from application/packages/)
+        # Apply same exclusions as application/ (cache, node_modules, .git objects, etc.)
+        if [ -d "${CONFIG_TEMP_DIR}/packages" ] && [ "$(ls -A "${CONFIG_TEMP_DIR}/packages" 2>/dev/null)" ]; then
             echo "  Syncing packages directory..."
             mkdir -p "${SITE_PATH}/public/packages"
             rsync_output=$(rsync -av --stats \
                 --exclude='node_modules' \
                 --exclude='**/node_modules' \
+                --exclude='cache' \
+                --exclude='config/doctrine/proxies' \
+                --exclude='.git/objects' \
+                --exclude='.git/packed-refs' \
+                --exclude='.git/index' \
+                --exclude='.git/logs' \
+                --exclude='.git/hooks' \
+                --exclude='.git/info' \
+                --include='.git/config' \
+                --include='.git/HEAD' \
+                --include='.git/refs/remotes/origin/**' \
+                --include='.git/refs/heads/**' \
+                --exclude='.git/**' \
                 "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/packages/" 2>&1)
             files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
             if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
                 total_config_changed=$((total_config_changed + files_transferred))
+                echo "  ✓ Packages synced: ${files_transferred} file(s)"
+            else
+                echo "  ⚠ Warning: No files transferred for packages directory"
             fi
+        else
+            echo "  ⊘ No packages directory found in Git repository"
         fi
         
         if [ "$total_config_changed" -eq 0 ] && [ ! -d "${CONFIG_TEMP_DIR}/application" ]; then
@@ -1040,9 +1080,9 @@ pull_config_files() {
                 fi
             fi
             if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
-                mkdir -p "${SITE_PATH}/public/application/packages"
+                mkdir -p "${SITE_PATH}/public/packages"
                 echo "  Syncing packages..."
-                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/application/packages/" 2>&1)
+                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/packages/" 2>&1)
                 files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
                 if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
                     total_config_files=$((total_config_files + files_transferred))
