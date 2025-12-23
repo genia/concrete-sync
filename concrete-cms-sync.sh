@@ -197,7 +197,7 @@ setup_git_credentials() {
 # Create and push a Git tag for this snapshot
 create_snapshot_tag() {
     local tag_type="${1:-sync}"  # db, files, config, or sync (default)
-    local timestamp=$(date +%Y%m%d-%H%M%S)
+    local timestamp=$(date +%Y-%m-%d_%H:%M:%S)
     local tag_name="${tag_type}-${timestamp}"
     
     # Create the tag (suppress output)
@@ -441,13 +441,7 @@ export_production_database_to_git() {
             git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
         fi
         git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
-        # Create and push snapshot tag
-        TAG_NAME=$(create_snapshot_tag "db")
-        if [ -n "$TAG_NAME" ]; then
-            echo "✓ Database exported and pushed to Git (tagged: ${TAG_NAME})"
-        else
-            echo "✓ Database exported and pushed to Git"
-        fi
+        echo "✓ Database exported and pushed to Git"
     else
         echo "No database changes to sync"
     fi
@@ -705,11 +699,6 @@ pull_uploaded_files() {
                     git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
                 fi
                 git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
-                # Create and push snapshot tag
-                TAG_NAME=$(create_snapshot_tag "files")
-                if [ -n "$TAG_NAME" ]; then
-                    echo "  Tagged snapshot: ${TAG_NAME}"
-                fi
             else
                 # Even if no changes, pull to stay in sync
                 if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
@@ -861,13 +850,7 @@ pull_config_files() {
                 git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
             fi
             git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
-            # Create and push snapshot tag
-            TAG_NAME=$(create_snapshot_tag "config")
-            if [ -n "$TAG_NAME" ]; then
-                echo "✓ Config files pushed to Git (tagged: ${TAG_NAME})"
-            else
-                echo "✓ Config files pushed to Git"
-            fi
+            echo "✓ Config files pushed to Git"
         else
             echo "No config file changes to sync"
         fi
@@ -1107,6 +1090,29 @@ main() {
     fi
     
     if [ "$SYNC_DIRECTION" = "push" ]; then
+        # Create a single unified snapshot tag after all push operations complete
+        print_step "Creating unified snapshot tag..."
+        # Use a temp directory to create the tag on the remote
+        TAG_TEMP_DIR="${SCRIPT_DIR}/.tag-create-temp"
+        if [ -d "${TAG_TEMP_DIR}" ]; then
+            rm -rf "${TAG_TEMP_DIR}"
+        fi
+        mkdir -p "${TAG_TEMP_DIR}"
+        cd "${TAG_TEMP_DIR}"
+        git init >/dev/null 2>&1
+        git remote add origin "${FILES_GIT_REPO}" >/dev/null 2>&1 || git remote set-url origin "${FILES_GIT_REPO}" >/dev/null 2>&1
+        git fetch origin "${FILES_GIT_BRANCH}" >/dev/null 2>&1
+        git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" >/dev/null 2>&1 || git checkout "${FILES_GIT_BRANCH}" >/dev/null 2>&1
+        
+        # Create unified tag (not type-specific, just "snapshot")
+        TAG_NAME=$(create_snapshot_tag "snapshot")
+        if [ -n "$TAG_NAME" ]; then
+            echo "✓ Created unified snapshot tag: ${TAG_NAME}"
+        fi
+        
+        cd - >/dev/null 2>&1
+        rm -rf "${TAG_TEMP_DIR}"
+        
         if [ "$SYNC_DATABASE" = "auto" ]; then
             print_step "Files and database pushed to Git - run 'pull' on target environment to complete sync"
         else
