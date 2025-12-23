@@ -27,11 +27,11 @@ REMOTE_HOST=""  # e.g., user@example.com
 REMOTE_PATH=""  # e.g., /var/www/html (path to site on remote server)
 REMOTE_USER=""  # SSH user (combined with REMOTE_HOST if needed)
 SYNC_UPLOADED_FILES="auto"  # Options: auto, ask, skip
-UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
-FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
+FILES_GIT_REPO=""  # REQUIRED: e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 SYNC_DATABASE="auto"  # Options: auto, skip
 COMPOSER_DIR=""  # Directory containing composer.phar (e.g., /usr/local/bin or /opt/composer)
+ENVIRONMENT=""  # REQUIRED: "prod" or "dev" - set to "prod" on production server, "dev" on development machine
 # DB credentials will be loaded from .deployment-config
 # On dev: uses local dev database credentials (for export)
 # Production DB credentials will be loaded from production .deployment-config via SSH
@@ -48,11 +48,11 @@ REMOTE_HOST="${REMOTE_HOST:-}"
 REMOTE_PATH="${REMOTE_PATH:-}"
 REMOTE_USER="${REMOTE_USER:-}"
 SYNC_UPLOADED_FILES="${SYNC_UPLOADED_FILES:-auto}"
-UPLOADED_FILES_METHOD="${UPLOADED_FILES_METHOD:-git}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
 SYNC_DATABASE="${SYNC_DATABASE:-auto}"
 COMPOSER_DIR="${COMPOSER_DIR:-}"
+ENVIRONMENT="${ENVIRONMENT:-}"
 DB_HOSTNAME="${DB_HOSTNAME:-}"
 DB_DATABASE="${DB_DATABASE:-}"
 DB_USERNAME="${DB_USERNAME:-}"
@@ -95,9 +95,46 @@ print_error() {
     echo -e "${RED}Error: $1${NC}"
 }
 
+# Check if running on production server directly
+is_running_on_production() {
+    # Check ENVIRONMENT variable from config file
+    if [ -n "$ENVIRONMENT" ]; then
+        if [ "$ENVIRONMENT" = "prod" ] || [ "$ENVIRONMENT" = "production" ]; then
+            return 0
+        elif [ "$ENVIRONMENT" = "dev" ] || [ "$ENVIRONMENT" = "development" ]; then
+            return 1
+        else
+            print_error "ENVIRONMENT must be 'prod' or 'dev', got: ${ENVIRONMENT}"
+            exit 1
+        fi
+    fi
+    
+    # Fallback: if ENVIRONMENT not set, check legacy RUNNING_ON_PRODUCTION variable
+    if [ "${RUNNING_ON_PRODUCTION:-}" = "true" ]; then
+        return 0
+    fi
+    
+    # Default: assume dev if not explicitly set
+    return 1
+}
+
 # Check prerequisites
 check_prerequisites() {
     print_step "Checking prerequisites..."
+    
+    # ENVIRONMENT is required
+    if [ -z "$ENVIRONMENT" ]; then
+        print_error "ENVIRONMENT must be set in .deployment-config"
+        print_error "Set it to 'prod' on production server or 'dev' on development machine:"
+        print_error "  ENVIRONMENT=prod  # or ENVIRONMENT=dev"
+        exit 1
+    fi
+    
+    # Validate ENVIRONMENT value
+    if [ "$ENVIRONMENT" != "prod" ] && [ "$ENVIRONMENT" != "production" ] && [ "$ENVIRONMENT" != "dev" ] && [ "$ENVIRONMENT" != "development" ]; then
+        print_error "ENVIRONMENT must be 'prod' or 'dev', got: ${ENVIRONMENT}"
+        exit 1
+    fi
     
     # SITE_PATH is required
     if [ -z "$SITE_PATH" ]; then
@@ -120,8 +157,11 @@ check_prerequisites() {
     
     PROJECT_DIR="${SITE_PATH}"  # Use SITE_PATH as PROJECT_DIR throughout
     
-    command -v mysqldump >/dev/null 2>&1 || { print_error "mysqldump is required but not installed"; exit 1; }
-    command -v rsync >/dev/null 2>&1 || { print_error "rsync is required but not installed"; exit 1; }
+        command -v mysqldump >/dev/null 2>&1 || { print_error "mysqldump is required but not installed"; exit 1; }
+        
+        # Check for Git (required for file syncing)
+        command -v git >/dev/null 2>&1 || { print_error "git is required but not installed"; exit 1; }
+    
     # Check for composer (either via COMPOSER_DIR or system composer)
     if [ -n "$COMPOSER_DIR" ]; then
         if [ ! -f "${COMPOSER_DIR}/composer.phar" ]; then
@@ -133,11 +173,30 @@ check_prerequisites() {
         command -v composer >/dev/null 2>&1 || { print_error "composer is required but not installed (or set COMPOSER_DIR in .deployment-config)"; exit 1; }
     fi
     
-    if [ -z "$REMOTE_HOST" ] || [ -z "$REMOTE_PATH" ]; then
-        print_error "REMOTE_HOST and REMOTE_PATH must be set"
-        print_error "Set in .deployment-config or as environment variables:"
-        print_error "  REMOTE_HOST=server.com REMOTE_PATH=/path/to/site"
-        exit 1
+    # Check if running on production or dev
+    if is_running_on_production; then
+        # Running on production - will pull from Git, so REMOTE_HOST not needed
+        echo "✓ Running on production server (ENVIRONMENT=${ENVIRONMENT})"
+        echo "  Site path: ${SITE_PATH}"
+        echo "  Will pull from Git repository"
+    else
+        # Running from dev
+        echo "✓ Running from dev machine (ENVIRONMENT=${ENVIRONMENT})"
+        echo "  Local site path: ${SITE_PATH}"
+        
+        # Check for Git (required for file syncing)
+        command -v git >/dev/null 2>&1 || { print_error "git is required but not installed"; exit 1; }
+        
+        if [ -z "$REMOTE_HOST" ] || [ -z "$REMOTE_PATH" ]; then
+            # Using Git method - REMOTE_HOST not needed
+            if [ -z "$FILES_GIT_REPO" ]; then
+                print_error "FILES_GIT_REPO must be set in .deployment-config"
+                exit 1
+            fi
+            echo "  Using Git method - REMOTE_HOST not required"
+        else
+            echo "  Production server: ${REMOTE_HOST}:${REMOTE_PATH}"
+        fi
     fi
     
     # Validate DB credentials are present (from .deployment-config)
@@ -190,35 +249,7 @@ create_deployment_package() {
     echo "✓ Deployment package prepared"
 }
 
-# Deploy files via rsync
-deploy_files() {
-    print_step "Deploying files to production..."
-    
-    # Exclude patterns for rsync
-    EXCLUDE_PATTERNS=(
-        "--exclude=.git"
-        "--exclude=.env"
-        "--exclude=node_modules"
-        "--exclude=.idea"
-        "--exclude=backups"
-        "--exclude=tests"
-        "--exclude=phpunit.xml"
-        "--exclude=.phpunit.*"
-        "--exclude=public/hot"
-        "--exclude=public/mix-manifest.json"
-        "--exclude=public/application/files"  # We'll sync this separately
-    )
-    
-    # Sync code files
-    rsync -avz --delete \
-        "${EXCLUDE_PATTERNS[@]}" \
-        "${PROJECT_DIR}/" \
-        "${REMOTE_HOST}:${REMOTE_PATH}/"
-    
-    echo "✓ Files deployed"
-}
-
-# Deploy uploaded files separately
+# Deploy uploaded files via Git
 # This syncs all uploaded images, documents, and thumbnails from public/application/files/
 deploy_uploaded_files() {
     print_step "Deploying uploaded files (images, documents, thumbnails)..."
@@ -242,107 +273,64 @@ deploy_uploaded_files() {
     fi
     
     if [[ $SYNC_YES =~ ^[Yy]$ ]]; then
-        if [ "$UPLOADED_FILES_METHOD" = "git" ]; then
-            # Git-based transfer (best of both worlds - fast, incremental, versioned)
-            echo "Syncing uploaded files via Git intermediary..."
-            
-            if [ -z "$FILES_GIT_REPO" ]; then
-                print_error "FILES_GIT_REPO must be configured for git method"
-                print_warning "Falling back to zip method"
-                UPLOADED_FILES_METHOD="zip"
-            else
-                FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
-                
-                # Initialize or update local git repo for files
-                if [ ! -d "${FILES_TEMP_DIR}" ]; then
-                    echo "Initializing Git repository for files..."
-                    mkdir -p "${FILES_TEMP_DIR}"
-                    cd "${FILES_TEMP_DIR}"
-                    git init
-                    git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
-                else
-                    cd "${FILES_TEMP_DIR}"
-                    git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
-                fi
-                
-                # Copy files to temp directory
-                echo "Preparing files for Git..."
-                rm -rf "${FILES_TEMP_DIR}"/*
-                cp -r "${PROJECT_DIR}/public/application/files/"* "${FILES_TEMP_DIR}/" 2>/dev/null || true
-                
-                # Commit and push
-                cd "${FILES_TEMP_DIR}"
-                git add -A
-                if git diff --staged --quiet; then
-                    echo "No file changes to sync"
-                else
-                    git commit -m "Sync files $(date +%Y-%m-%d\ %H:%M:%S)" || true
-                    echo "Pushing to Git repository..."
-                    git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
-                fi
-                
-                # Pull on remote server
-                echo "Pulling files on production server..."
-                ssh "${REMOTE_HOST}" << EOF
-                    cd ${REMOTE_PATH}
-                    TEMP_DIR="\$HOME/.concrete-sync-files-temp"
-                    if [ ! -d "\${TEMP_DIR}" ]; then
-                        mkdir -p "\${TEMP_DIR}"
-                        cd "\${TEMP_DIR}"
-                        git init
-                        git remote add origin ${FILES_GIT_REPO} 2>/dev/null || git remote set-url origin ${FILES_GIT_REPO}
-                    else
-                        cd "\${TEMP_DIR}"
-                    fi
-                    git fetch origin ${FILES_GIT_BRANCH}
-                    git reset --hard origin/${FILES_GIT_BRANCH}
-                    mkdir -p ${REMOTE_PATH}/public/application/files
-                    cp -r * ${REMOTE_PATH}/public/application/files/ 2>/dev/null || true
-                    echo "✓ Files synced from Git"
-EOF
-                
-                echo "✓ Uploaded files synced via Git (images, documents, thumbnails)"
-            fi
+        if [ -z "$FILES_GIT_REPO" ]; then
+            print_error "FILES_GIT_REPO must be configured in .deployment-config"
+            return 1
         fi
         
-        if [ "$UPLOADED_FILES_METHOD" = "zip" ]; then
-            # Zip-based transfer (faster for large file sets)
-            echo "Creating zip archive of uploaded files..."
-            ZIP_FILE="${PROJECT_DIR}/backups/files_${TIMESTAMP}.zip"
-            mkdir -p "${PROJECT_DIR}/backups"
-            
-            cd "${PROJECT_DIR}/public/application"
-            zip -r "${ZIP_FILE}" files/ > /dev/null
-            cd "${PROJECT_DIR}"
-            
-            FILE_SIZE=$(du -h "${ZIP_FILE}" | cut -f1)
-            echo "Archive created: ${ZIP_FILE} (${FILE_SIZE})"
-            echo "Transferring to production server..."
-            
-            # Transfer zip file
-            scp "${ZIP_FILE}" "${REMOTE_HOST}:${REMOTE_PATH}/files_temp.zip"
-            
-            # Extract on remote server
-            echo "Extracting on production server..."
-            ssh "${REMOTE_HOST}" << EOF
-                cd ${REMOTE_PATH}
-                mkdir -p public/application/files
-                unzip -o files_temp.zip -d public/application/
-                rm files_temp.zip
-                echo "✓ Files extracted"
-EOF
-            
-            # Clean up local zip
-            rm "${ZIP_FILE}"
-            echo "✓ Uploaded files synced via zip transfer (images, documents, thumbnails)"
-        elif [ "$UPLOADED_FILES_METHOD" = "rsync" ]; then
-            # Rsync-based transfer (incremental, better for small changes)
-            echo "Syncing uploaded files via rsync from ${PROJECT_DIR}/public/application/files/..."
-            rsync -avz --progress \
-                "${PROJECT_DIR}/public/application/files/" \
-                "${REMOTE_HOST}:${REMOTE_PATH}/public/application/files/"
-            echo "✓ Uploaded files synced via rsync (images, documents, thumbnails)"
+        echo "Syncing uploaded files via Git..."
+        
+        FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
+        
+        # Initialize or update local git repo for files
+        if [ ! -d "${FILES_TEMP_DIR}" ]; then
+            echo "Initializing Git repository for files..."
+            mkdir -p "${FILES_TEMP_DIR}"
+            cd "${FILES_TEMP_DIR}"
+            git init
+            git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+        else
+            cd "${FILES_TEMP_DIR}"
+            git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
         fi
+        
+        # Copy files to temp directory
+        echo "Preparing files for Git..."
+        rm -rf "${FILES_TEMP_DIR}"/*
+        cp -r "${PROJECT_DIR}/public/application/files/"* "${FILES_TEMP_DIR}/" 2>/dev/null || true
+        
+        # Commit and push
+        cd "${FILES_TEMP_DIR}"
+        git add -A
+        if git diff --staged --quiet; then
+            echo "No file changes to sync"
+        else
+            git commit -m "Sync files $(date +%Y-%m-%d\ %H:%M:%S)" || true
+            echo "Pushing to Git repository..."
+            git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
+        fi
+        
+        # If running on production, pull from Git
+        if is_running_on_production; then
+            echo "Pulling files on production server..."
+            cd "${PROJECT_DIR}"
+            TEMP_DIR="${HOME}/.concrete-sync-files-temp"
+            if [ ! -d "${TEMP_DIR}" ]; then
+                mkdir -p "${TEMP_DIR}"
+                cd "${TEMP_DIR}"
+                git init
+                git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+            else
+                cd "${TEMP_DIR}"
+            fi
+            git fetch origin "${FILES_GIT_BRANCH}"
+            git reset --hard "origin/${FILES_GIT_BRANCH}"
+            mkdir -p "${PROJECT_DIR}/public/application/files"
+            cp -r * "${PROJECT_DIR}/public/application/files/" 2>/dev/null || true
+            echo "✓ Files synced from Git"
+        fi
+        
+        echo "✓ Uploaded files synced via Git (images, documents, thumbnails)"
     else
         echo "Skipped uploaded files sync"
         print_warning "Uploaded images and files were NOT synced. You may need to sync them manually."
@@ -355,13 +343,8 @@ deploy_config_files() {
     print_step "Deploying config files via Git..."
     
     if [ -z "$FILES_GIT_REPO" ]; then
-        echo "FILES_GIT_REPO not set - skipping config file sync via Git"
-        return 0
-    fi
-    
-    if [ "$UPLOADED_FILES_METHOD" != "git" ]; then
-        echo "Config files only sync via Git method (UPLOADED_FILES_METHOD=git required)"
-        return 0
+        print_error "FILES_GIT_REPO must be set in .deployment-config"
+        return 1
     fi
     
     echo "Pushing config files to Git..."
@@ -531,27 +514,32 @@ main() {
     # Export database
     DB_FILE=$(export_database)
     
-    # Deploy files
-    deploy_files
-    
-    # Deploy config files via Git (if using Git method)
-    if [ "$UPLOADED_FILES_METHOD" = "git" ] && [ -n "$FILES_GIT_REPO" ]; then
+    # Deploy config files via Git
+    if [ -n "$FILES_GIT_REPO" ]; then
         deploy_config_files
+    else
+        print_error "FILES_GIT_REPO must be set in .deployment-config"
+        exit 1
     fi
     
     # Optionally deploy uploaded files
     deploy_uploaded_files
     
-    # Run post-deployment tasks
-    post_deployment
-    
-    # Import database if enabled
-    if [ "$SYNC_DATABASE" = "auto" ]; then
-        import_database "${DB_FILE}"
-    else
-        echo "Database sync disabled (SYNC_DATABASE=skip)"
-        echo "Database backup saved at: ${DB_FILE}"
-        echo "Import manually when ready"
+    # Run post-deployment tasks (only when running from dev with REMOTE_HOST)
+    if ! is_running_on_production && [ -n "$REMOTE_HOST" ]; then
+        post_deployment
+        
+        # Import database if enabled (only when running from dev)
+        if [ "$SYNC_DATABASE" = "auto" ]; then
+            import_database "${DB_FILE}"
+        else
+            echo "Database sync disabled (SYNC_DATABASE=skip)"
+            echo "Database backup saved at: ${DB_FILE}"
+            echo "Import manually when ready"
+        fi
+    elif is_running_on_production; then
+        echo "Running on production - files pulled from Git"
+        echo "Database should be imported separately if needed"
     fi
     
     print_step "Deployment completed successfully!"
