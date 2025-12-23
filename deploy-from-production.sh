@@ -27,6 +27,7 @@ UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
 FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 SYNC_DATABASE="auto"  # Options: auto, skip
+COMPOSER_DIR=""  # Directory containing composer.phar (e.g., /usr/local/bin or /opt/composer)
 # DB credentials will be loaded from .deployment-config
 # On dev: uses local dev database credentials
 # On production: uses production database credentials
@@ -47,10 +48,19 @@ UPLOADED_FILES_METHOD="${UPLOADED_FILES_METHOD:-git}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
 SYNC_DATABASE="${SYNC_DATABASE:-auto}"
+COMPOSER_DIR="${COMPOSER_DIR:-}"
 DB_HOSTNAME="${DB_HOSTNAME:-}"
 DB_DATABASE="${DB_DATABASE:-}"
 DB_USERNAME="${DB_USERNAME:-}"
 DB_PASSWORD="${DB_PASSWORD:-}"
+
+# Set composer command
+if [ -n "$COMPOSER_DIR" ]; then
+    COMPOSER_CMD="php ${COMPOSER_DIR}/composer.phar"
+else
+    # Fallback to system composer if COMPOSER_DIR not set
+    COMPOSER_CMD="composer"
+fi
 
 # Set PROJECT_DIR to SITE_PATH (the actual site location)
 # For backwards compatibility, if SITE_PATH not set but PROJECT_DIR is, use that
@@ -693,7 +703,7 @@ install_dependencies() {
     cd "${PROJECT_DIR}" || { print_error "Cannot change to PROJECT_DIR: ${PROJECT_DIR}"; return 1; }
     
     # Install Composer dependencies
-    composer install
+    ${COMPOSER_CMD} install
     
     # Install npm dependencies if needed
     if [ -f "${PROJECT_DIR}/package.json" ]; then

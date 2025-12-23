@@ -31,6 +31,7 @@ UPLOADED_FILES_METHOD="git"  # Options: git, zip, rsync
 FILES_GIT_REPO=""  # e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 SYNC_DATABASE="auto"  # Options: auto, skip
+COMPOSER_DIR=""  # Directory containing composer.phar (e.g., /usr/local/bin or /opt/composer)
 # DB credentials will be loaded from .deployment-config
 # On dev: uses local dev database credentials (for export)
 # Production DB credentials will be loaded from production .deployment-config via SSH
@@ -51,10 +52,19 @@ UPLOADED_FILES_METHOD="${UPLOADED_FILES_METHOD:-git}"
 FILES_GIT_REPO="${FILES_GIT_REPO:-}"
 FILES_GIT_BRANCH="${FILES_GIT_BRANCH:-main}"
 SYNC_DATABASE="${SYNC_DATABASE:-auto}"
+COMPOSER_DIR="${COMPOSER_DIR:-}"
 DB_HOSTNAME="${DB_HOSTNAME:-}"
 DB_DATABASE="${DB_DATABASE:-}"
 DB_USERNAME="${DB_USERNAME:-}"
 DB_PASSWORD="${DB_PASSWORD:-}"
+
+# Set composer command
+if [ -n "$COMPOSER_DIR" ]; then
+    COMPOSER_CMD="php ${COMPOSER_DIR}/composer.phar"
+else
+    # Fallback to system composer if COMPOSER_DIR not set
+    COMPOSER_CMD="composer"
+fi
 
 # Set PROJECT_DIR to SITE_PATH (the actual site location)
 # For backwards compatibility, if SITE_PATH not set but PROJECT_DIR is, use that
@@ -112,7 +122,16 @@ check_prerequisites() {
     
     command -v mysqldump >/dev/null 2>&1 || { print_error "mysqldump is required but not installed"; exit 1; }
     command -v rsync >/dev/null 2>&1 || { print_error "rsync is required but not installed"; exit 1; }
-    command -v composer >/dev/null 2>&1 || { print_error "composer is required but not installed"; exit 1; }
+    # Check for composer (either via COMPOSER_DIR or system composer)
+    if [ -n "$COMPOSER_DIR" ]; then
+        if [ ! -f "${COMPOSER_DIR}/composer.phar" ]; then
+            print_error "composer.phar not found at ${COMPOSER_DIR}/composer.phar"
+            exit 1
+        fi
+        command -v php >/dev/null 2>&1 || { print_error "php is required to run composer.phar"; exit 1; }
+    else
+        command -v composer >/dev/null 2>&1 || { print_error "composer is required but not installed (or set COMPOSER_DIR in .deployment-config)"; exit 1; }
+    fi
     
     if [ -z "$REMOTE_HOST" ] || [ -z "$REMOTE_PATH" ]; then
         print_error "REMOTE_HOST and REMOTE_PATH must be set"
@@ -353,8 +372,19 @@ post_deployment() {
     ssh "${REMOTE_HOST}" << EOF
         cd ${REMOTE_PATH}
         
+        # Load composer command from remote config
+        CONFIG_DIR=\$(find ~ -name '.deployment-config' -type f 2>/dev/null | head -1 | xargs dirname 2>/dev/null) || CONFIG_DIR=\$(dirname ${REMOTE_PATH})/concrete-sync
+        if [ -f "\${CONFIG_DIR}/.deployment-config" ]; then
+            source "\${CONFIG_DIR}/.deployment-config"
+        fi
+        if [ -n "\${COMPOSER_DIR:-}" ]; then
+            COMPOSER_CMD="php \${COMPOSER_DIR}/composer.phar"
+        else
+            COMPOSER_CMD="composer"
+        fi
+        
         # Install Composer dependencies
-        composer install --no-dev --optimize-autoloader
+        \${COMPOSER_CMD} install --no-dev --optimize-autoloader
         
         # Clear caches
         ./vendor/bin/concrete c5:clear-cache
