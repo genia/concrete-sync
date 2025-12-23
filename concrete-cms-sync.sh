@@ -895,6 +895,12 @@ pull_config_files() {
                 "${SITE_PATH}/public/application/" "${CONFIG_TEMP_DIR}/application/" 2>/dev/null || true
         fi
         
+        # Also sync public/packages/ (package assets, separate from application/packages/)
+        if [ -d "${SITE_PATH}/public/packages" ]; then
+            rsync -av \
+                "${SITE_PATH}/public/packages/" "${CONFIG_TEMP_DIR}/packages/" 2>/dev/null || true
+        fi
+        
         # Commit and push
         git add -A
         if ! git diff --staged --quiet; then
@@ -937,6 +943,8 @@ pull_config_files() {
         # Copy config files to local site using rsync
         # Sync entire application/ directory (excluding files/ which is synced separately, and cache/)
         # This ensures we catch all custom directories (express/, user_exports/, etc.) mentioned in docs as "and more"
+        total_config_changed=0
+        
         if [ -d "${CONFIG_TEMP_DIR}/application" ]; then
             echo "  Syncing application directory (config, themes, blocks, packages, express, etc.)..."
             rsync_output=$(rsync -av --stats \
@@ -944,11 +952,24 @@ pull_config_files() {
                 --exclude='cache' \
                 "${CONFIG_TEMP_DIR}/application/" "${SITE_PATH}/public/application/" 2>&1)
             files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-            total_config_changed=0
             if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                total_config_changed=$files_transferred
+                total_config_changed=$((total_config_changed + files_transferred))
             fi
-        else
+        fi
+        
+        # Also sync public/packages/ (package assets, separate from application/packages/)
+        if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
+            echo "  Syncing packages directory..."
+            mkdir -p "${SITE_PATH}/public/packages"
+            rsync_output=$(rsync -av --stats \
+                "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/packages/" 2>&1)
+            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                total_config_changed=$((total_config_changed + files_transferred))
+            fi
+        fi
+        
+        if [ "$total_config_changed" -eq 0 ] && [ ! -d "${CONFIG_TEMP_DIR}/application" ]; then
             # Fallback: sync individual directories if application/ structure doesn't exist
             total_config_files=0
             total_config_changed=0
