@@ -216,6 +216,78 @@ create_snapshot_tag() {
     return 0
 }
 
+# List available tags and let user select one (or "latest")
+select_snapshot_tag() {
+    local repo_url="$1"
+    local branch="${2:-main}"
+    
+    print_step "Fetching available snapshot tags..."
+    
+    # Create temp directory for fetching tags
+    local temp_dir="${SCRIPT_DIR}/.tag-list-temp"
+    if [ -d "${temp_dir}" ]; then
+        rm -rf "${temp_dir}"
+    fi
+    mkdir -p "${temp_dir}"
+    cd "${temp_dir}" || {
+        echo "latest"
+        return 0
+    }
+    
+    # Initialize git and fetch tags
+    git init >/dev/null 2>&1
+    git remote add origin "${repo_url}" >/dev/null 2>&1 || git remote set-url origin "${repo_url}" >/dev/null 2>&1
+    
+    # Fetch tags from remote
+    if ! git fetch origin "refs/tags/*:refs/tags/*" >/dev/null 2>&1; then
+        print_warning "Could not fetch tags from repository"
+        echo "latest"  # Return "latest" as fallback
+        cd - >/dev/null 2>&1
+        rm -rf "${temp_dir}"
+        return 0
+    fi
+    
+    # Get list of tags, sorted by date (newest first)
+    # Sort tags by their timestamp (newest first) - tags are named like db-20240115-143022
+    local tags=$(git tag -l | sort -r | head -20)  # Show last 20 tags
+    
+    cd - >/dev/null 2>&1
+    rm -rf "${temp_dir}"
+    
+    if [ -z "$tags" ]; then
+        echo "No tags found in repository, using latest" >&2
+        echo "latest"
+        return 0
+    fi
+    
+    # Display tags to user
+    echo ""
+    echo "Available snapshots:"
+    echo "  0) latest (most recent)"
+    local count=1
+    for tag in $tags; do
+        echo "  ${count}) ${tag}"
+        count=$((count + 1))
+    done
+    echo ""
+    
+    # Prompt user for selection
+    while true; do
+        read -p "Select snapshot to use (0 for latest, or number): " selection
+        if [ "$selection" = "0" ] || [ "$selection" = "latest" ]; then
+            echo "latest"
+            return 0
+        elif [ -n "$selection" ] && [ "$selection" -ge 1 ] && [ "$selection" -le "$(echo "$tags" | wc -l | tr -d ' ')" ] 2>/dev/null; then
+            # Get the selected tag
+            local selected_tag=$(echo "$tags" | sed -n "${selection}p")
+            echo "$selected_tag"
+            return 0
+        else
+            print_error "Invalid selection. Please enter 0 for latest or a number from the list."
+        fi
+    done
+}
+
 # Check prerequisites
 check_prerequisites() {
     print_step "Checking prerequisites..."
@@ -370,6 +442,8 @@ export_production_database_to_git() {
 
 # Pull database from Git and return path to file
 pull_database_from_git() {
+    local selected_tag="${1:-latest}"  # Tag to checkout, or "latest" for branch HEAD
+    
     print_step "Pulling database from Git..."
     
     if [ -z "$FILES_GIT_REPO" ]; then
@@ -402,8 +476,8 @@ pull_database_from_git() {
         return 1
     }
     
-    # Fetch from Git repository (send all output to stderr)
-    if ! { git fetch origin "${FILES_GIT_BRANCH}" 2>&1; } >&2; then
+    # Fetch from Git repository including tags (send all output to stderr)
+    if ! { git fetch origin "${FILES_GIT_BRANCH}" "refs/tags/*:refs/tags/*" 2>&1; } >&2; then
         print_error "Failed to fetch from Git repository"
         print_error "Repository: ${FILES_GIT_REPO}"
         print_error "Branch: ${FILES_GIT_BRANCH}"
@@ -411,11 +485,23 @@ pull_database_from_git() {
         return 1
     fi
     
-    # Checkout the branch (send all output to stderr)
-    if ! ({ git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>&1; } >&2) && ! ({ git checkout "${FILES_GIT_BRANCH}" 2>&1; } >&2); then
-        print_error "Failed to checkout branch: ${FILES_GIT_BRANCH}"
-        print_error "Make sure the branch exists in the repository"
-        return 1
+    # Checkout based on tag or branch
+    if [ "$selected_tag" = "latest" ]; then
+        # Checkout the branch (send all output to stderr)
+        if ! ({ git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>&1; } >&2) && ! ({ git checkout "${FILES_GIT_BRANCH}" 2>&1; } >&2); then
+            print_error "Failed to checkout branch: ${FILES_GIT_BRANCH}"
+            print_error "Make sure the branch exists in the repository"
+            return 1
+        fi
+        echo "  Using latest snapshot from branch: ${FILES_GIT_BRANCH}" >&2
+    else
+        # Checkout the specific tag
+        if ! { git checkout "${selected_tag}" 2>&1; } >&2; then
+            print_error "Failed to checkout tag: ${selected_tag}"
+            print_error "Make sure the tag exists in the repository"
+            return 1
+        fi
+        echo "  Using snapshot tag: ${selected_tag}" >&2
     fi
     
     # Check if database directory exists
@@ -496,12 +582,6 @@ import_database() {
     fi
     
     DB_FILE="$1"
-    
-    if is_running_on_production; then
-        print_warning "Running on production server - database import not applicable"
-        print_warning "This script is for syncing FROM production TO dev"
-        return 1
-    fi
     
     # DB credentials already loaded from .deployment-config in check_prerequisites
     # These are the local dev database credentials
@@ -624,6 +704,7 @@ pull_uploaded_files() {
             echo "✓ Files pushed to Git"
         else
             # Pull direction - pull files from Git
+            local selected_tag="${1:-latest}"  # Tag to checkout, or "latest" for branch HEAD
             echo "Pulling files from Git..."
             FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
             
@@ -638,8 +719,17 @@ pull_uploaded_files() {
             git init
             git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
             
-            git fetch origin "${FILES_GIT_BRANCH}"
-            git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+            # Fetch including tags
+            git fetch origin "${FILES_GIT_BRANCH}" "refs/tags/*:refs/tags/*"
+            
+            # Checkout based on tag or branch
+            if [ "$selected_tag" = "latest" ]; then
+                git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+                echo "  Using latest snapshot from branch: ${FILES_GIT_BRANCH}"
+            else
+                git checkout "${selected_tag}"
+                echo "  Using snapshot tag: ${selected_tag}"
+            fi
             
             # Copy to local files directory
             # Ensure the target directory exists
@@ -709,7 +799,7 @@ pull_config_files() {
         return 0
     fi
     
-    if is_running_on_production; then
+    if [ "$SYNC_DIRECTION" = "push" ]; then
         # Push direction - push config files to Git
         echo "Pushing config files to Git..."
         
@@ -768,6 +858,7 @@ pull_config_files() {
         fi
     else
         # Pull direction - pull config files from Git
+        local selected_tag="${1:-latest}"  # Tag to checkout, or "latest" for branch HEAD
         echo "Pulling config files from Git..."
         
         CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
@@ -782,8 +873,17 @@ pull_config_files() {
         git init
         git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
         
-        git fetch origin "${FILES_GIT_BRANCH}"
-        git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+        # Fetch including tags
+        git fetch origin "${FILES_GIT_BRANCH}" "refs/tags/*:refs/tags/*"
+        
+        # Checkout based on tag or branch
+        if [ "$selected_tag" = "latest" ]; then
+            git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+            echo "  Using latest snapshot from branch: ${FILES_GIT_BRANCH}"
+        else
+            git checkout "${selected_tag}"
+            echo "  Using snapshot tag: ${selected_tag}"
+        fi
         
         # Copy config files to local site
         if [ -d "${CONFIG_TEMP_DIR}/config" ]; then
@@ -906,16 +1006,33 @@ main() {
         setup_git_credentials
     fi
     
+    # On pull, select snapshot tag first
+    SELECTED_TAG="latest"
+    if [ "$SYNC_DIRECTION" = "pull" ]; then
+        SELECTED_TAG=$(select_snapshot_tag "${FILES_GIT_REPO}" "${FILES_GIT_BRANCH}")
+        echo ""
+        echo "Selected snapshot: ${SELECTED_TAG}"
+        echo ""
+    fi
+    
     # Handle file syncing - always use Git
     if [ -n "$FILES_GIT_REPO" ]; then
-        pull_config_files  # Function handles both push (production) and pull (dev)
+        if [ "$SYNC_DIRECTION" = "pull" ]; then
+            pull_config_files "${SELECTED_TAG}"  # Pass selected tag
+        else
+            pull_config_files  # Push doesn't need tag
+        fi
     else
         print_error "FILES_GIT_REPO must be set in .deployment-config"
         exit 1
     fi
     
     # Optionally pull/push uploaded files (function handles both directions)
-    pull_uploaded_files
+    if [ "$SYNC_DIRECTION" = "pull" ]; then
+        pull_uploaded_files "${SELECTED_TAG}"  # Pass selected tag
+    else
+        pull_uploaded_files  # Push doesn't need tag
+    fi
     
     # Install dependencies (only when pulling)
     if [ "$SYNC_DIRECTION" = "pull" ]; then
@@ -937,7 +1054,7 @@ main() {
             # Pull direction - pull from Git and import
             print_step "Syncing database from Git..."
             # Call function - errors go to stderr (visible), file path to stdout (captured)
-            DB_FILE=$(pull_database_from_git 2>&3)
+            DB_FILE=$(pull_database_from_git "${SELECTED_TAG}" 2>&3)
             EXIT_CODE=$?
             # Restore stderr
             exec 3>&2
