@@ -423,7 +423,7 @@ export_production_database_to_git() {
     
     # Export database to compressed file
     DB_FILE="database/production_db_${TIMESTAMP}.sql.gz"
-    mysqldump --no-tablespaces -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}"
+    mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}"
     
     # Keep only the latest database backup (remove old ones)
     find database/ -name "production_db_*.sql.gz" -type f ! -name "production_db_${TIMESTAMP}.sql.gz" -delete
@@ -581,7 +581,7 @@ export_production_database() {
     echo "  Host: ${DB_HOSTNAME}"
     echo "  Database: ${DB_DATABASE}"
     echo "  User: ${DB_USERNAME}"
-    mysqldump --no-tablespaces -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}.gz"
+    mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}.gz"
     
     echo "✓ Database exported from production to ${DB_FILE}.gz"
     echo "${DB_FILE}.gz"
