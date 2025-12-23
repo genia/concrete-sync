@@ -242,8 +242,8 @@ select_snapshot_tag() {
     echo "  Fetching tags from ${repo_url}..."
     # First fetch the branch
     git fetch origin "${branch}" >/dev/null 2>&1 || true
-    # Then fetch all tags
-    if ! git fetch origin "refs/tags/*:refs/tags/*" >/dev/null 2>&1; then
+    # Then fetch all tags - use the correct refspec format with force flag
+    if ! git fetch origin "+refs/tags/*:refs/tags/*" >/dev/null 2>&1; then
         print_warning "Could not fetch tags from repository"
         print_warning "Will use latest from branch instead"
         echo "latest"  # Return "latest" as fallback
@@ -252,9 +252,14 @@ select_snapshot_tag() {
         return 0
     fi
     
-    # Get list of tags, sorted by date (newest first)
-    # Sort tags by their timestamp (newest first) - tags are named like db-20240115-143022
+    # Get list of all tags, sorted by date (newest first)
+    # Show all tags (not just snapshot-*) to support both old and new formats
     local tags=$(git tag -l | sort -r | head -20)  # Show last 20 tags
+    
+    # Debug: show what tags were found
+    if [ -n "$tags" ]; then
+        echo "  Found $(echo "$tags" | wc -l | tr -d ' ') tag(s)" >&2
+    fi
     
     cd - >/dev/null 2>&1
     rm -rf "${temp_dir}"
