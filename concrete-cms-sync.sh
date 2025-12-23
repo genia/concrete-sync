@@ -254,14 +254,69 @@ select_snapshot_tag() {
     
     # Get list of all tags, sorted by date (newest first)
     # Show all tags (not just snapshot-*) to support both old and new formats
-    local tags=$(git tag -l | sort -r | head -20)  # Show last 20 tags
+    local tags=$(git tag -l 2>/dev/null | sort -r | head -20)  # Show last 20 tags
+    
+    # Debug: check what we got - if no tags, try fetching from remote directly
+    if [ -z "$tags" ] || [ -z "$(echo "$tags" | tr -d '[:space:]')" ]; then
+        echo "  Checking remote tags directly..." >&2
+        local remote_tags=$(git ls-remote --tags origin 2>/dev/null | sed 's|.*refs/tags/||' | grep -v '\^{}$' | sort -r | head -20)
+        if [ -n "$remote_tags" ] && [ -n "$(echo "$remote_tags" | tr -d '[:space:]')" ]; then
+            local remote_count=$(echo "$remote_tags" | grep -v '^$' | wc -l | tr -d ' ')
+            echo "  Found ${remote_count} tag(s) on remote, fetching..." >&2
+            # Fetch each tag individually using process substitution to avoid subshell
+            while IFS= read -r tag; do
+                tag=$(echo "$tag" | tr -d '[:space:]')  # Remove whitespace
+                if [ -n "$tag" ]; then
+                    git fetch origin "refs/tags/${tag}:refs/tags/${tag}" >/dev/null 2>&1 || true
+                fi
+            done < <(echo "$remote_tags")
+            # Get tags again after fetching
+            tags=$(git tag -l 2>/dev/null | sort -r | head -20)
+        fi
+    fi
+    
+    # Convert tags to array for proper iteration (do this before checking count)
+    local tag_array=()
+    if [ -n "$tags" ] && [ -n "$(echo "$tags" | tr -d '[:space:]')" ]; then
+        # Use process substitution to avoid subshell issues
+        while IFS= read -r tag; do
+            # Trim whitespace
+            tag=$(echo "$tag" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [ -n "$tag" ]; then
+                tag_array+=("$tag")
+            fi
+        done < <(echo "$tags")
+    fi
+    
+    # Check if tags were found using array length
+    local tag_count=${#tag_array[@]}
+    
+    # If no tags in array, try direct git command as fallback
+    if [ "$tag_count" -eq 0 ]; then
+        echo "  No tags found in initial fetch, trying direct git command..." >&2
+        local direct_tags=$(git tag -l 2>/dev/null)
+        if [ -n "$direct_tags" ] && [ -n "$(echo "$direct_tags" | tr -d '[:space:]')" ]; then
+            echo "  Found tags via direct command, adding to array..." >&2
+            # Try to use direct tags
+            while IFS= read -r tag; do
+                tag=$(echo "$tag" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                if [ -n "$tag" ]; then
+                    tag_array+=("$tag")
+                fi
+            done < <(echo "$direct_tags")
+            tag_count=${#tag_array[@]}
+            echo "  After fallback, tag_count: ${tag_count}" >&2
+        else
+            echo "  Debug: tags variable: '${tags}'" >&2
+            echo "  Debug: direct_tags: '${direct_tags}'" >&2
+        fi
+    else
+        echo "  Found ${tag_count} tag(s)" >&2
+    fi
     
     cd - >/dev/null 2>&1
     
-    # Check if tags were found (handle both empty and newline-only cases)
-    local tag_count=$(echo "$tags" | grep -v '^$' | wc -l | tr -d ' ')
-    
-    if [ -z "$tags" ] || [ "$tag_count" -eq 0 ]; then
+    if [ "$tag_count" -eq 0 ]; then
         rm -rf "${temp_dir}"
         echo ""
         echo "No snapshot tags found in repository." >&2
@@ -280,13 +335,22 @@ select_snapshot_tag() {
     
     rm -rf "${temp_dir}"
     
-    # Convert tags to array for proper iteration
-    local tag_array=()
-    while IFS= read -r tag; do
-        if [ -n "$tag" ]; then
-            tag_array+=("$tag")
-        fi
-    done <<< "$tags"
+    # Final verification - make sure we actually have tags
+    if [ ${#tag_array[@]} -eq 0 ]; then
+        echo ""
+        echo "No snapshot tags found in repository." >&2
+        echo ""
+        echo "This could mean:" >&2
+        echo "  - No snapshots have been pushed yet (run 'push' first to create tags)" >&2
+        echo "  - Tags exist but weren't fetched (check repository access)" >&2
+        echo ""
+        echo "Using latest from branch instead." >&2
+        echo ""
+        read -p "Press Enter to continue with latest, or Ctrl+C to cancel..." -r
+        echo ""
+        echo "latest"
+        return 0
+    fi
     
     local tag_count=${#tag_array[@]}
     local page_size=10
@@ -304,8 +368,10 @@ select_snapshot_tag() {
         local display_count=0
         for ((i=$start_idx; i<=$end_idx && i<$tag_count; i++)); do
             local tag_num=$((i + 1))
-            echo "  ${tag_num}) ${tag_array[$i]}"
-            display_count=$((display_count + 1))
+            if [ -n "${tag_array[$i]}" ]; then
+                echo "  ${tag_num}) ${tag_array[$i]}"
+                display_count=$((display_count + 1))
+            fi
         done
         
         # Show paging info
