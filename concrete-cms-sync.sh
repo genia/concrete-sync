@@ -232,7 +232,7 @@ select_snapshot_tag() {
     # Show all tags (not just snapshot-*) to support both old and new formats
     local tags=$(git tag -l 2>/dev/null | sort -r | head -20)  # Show last 20 tags
     
-    # Debug: check what we got - if no tags, try fetching from remote directly
+    # If no tags found locally, try fetching from remote directly
     if [ -z "$tags" ] || [ -z "$(echo "$tags" | tr -d '[:space:]')" ]; then
         echo "  Checking remote tags directly..." >&2
         local remote_tags=$(git ls-remote --tags origin 2>/dev/null | sed 's|.*refs/tags/||' | grep -v '\^{}$' | sort -r | head -20)
@@ -1208,42 +1208,149 @@ main() {
         echo ""
     fi
     
-    # Handle file syncing - always use Git
-    if [ -n "$FILES_GIT_REPO" ]; then
-        if [ "$SYNC_DIRECTION" = "pull" ]; then
-            pull_config_files "${SELECTED_TAG}"  # Pass selected tag
-        else
-            pull_config_files  # Push doesn't need tag
-        fi
-    else
-        print_error "FILES_GIT_REPO must be set in .deployment-config"
-        exit 1
-    fi
-    
-    # Optionally pull/push uploaded files (function handles both directions)
-    if [ "$SYNC_DIRECTION" = "pull" ]; then
-        pull_uploaded_files "${SELECTED_TAG}"  # Pass selected tag
-    else
-        pull_uploaded_files  # Push doesn't need tag
-    fi
-    
-    # Install dependencies (only when pulling)
-    if [ "$SYNC_DIRECTION" = "pull" ]; then
-        install_dependencies
-    fi
-    
-    # Handle database sync - always use Git
-    if [ "$SYNC_DATABASE" = "auto" ]; then
+    if [ "$SYNC_DIRECTION" = "push" ]; then
+        # Push mode: Add all components (config, files, database) to one commit, then push once
+        print_step "Preparing unified snapshot for Git..."
+        
         if [ -z "$FILES_GIT_REPO" ]; then
-            print_error "FILES_GIT_REPO must be set for database sync"
+            print_error "FILES_GIT_REPO must be set in .deployment-config"
             exit 1
         fi
         
-        if [ "$SYNC_DIRECTION" = "push" ]; then
-            # Push direction - export and push to Git
-            export_database_to_git
-            echo "  Database pushed to Git - run 'pull' on target environment to import"
+        # Create single unified temp directory for all push operations
+        UNIFIED_TEMP_DIR="${SCRIPT_DIR}/.unified-push-temp"
+        if [ -d "${UNIFIED_TEMP_DIR}" ]; then
+            rm -rf "${UNIFIED_TEMP_DIR}"
+        fi
+        mkdir -p "${UNIFIED_TEMP_DIR}"
+        cd "${UNIFIED_TEMP_DIR}"
+        git init
+        git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+        
+        # Fetch and checkout existing branch
+        git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
+        if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
+            git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
         else
+            git checkout -b "${FILES_GIT_BRANCH}"
+        fi
+        
+        # 1. Add config files (application/ and packages/)
+        if [ -d "${SITE_PATH}/public/application" ]; then
+            echo "  Adding application/ directory..."
+            mkdir -p "${UNIFIED_TEMP_DIR}/application"
+            rsync -av \
+                --exclude='files' \
+                --exclude='cache' \
+                --exclude='node_modules' \
+                --exclude='**/node_modules' \
+                --exclude='config/doctrine/proxies' \
+                --exclude='.git/objects' \
+                --exclude='.git/packed-refs' \
+                --exclude='.git/index' \
+                --exclude='.git/logs' \
+                --exclude='.git/hooks' \
+                --exclude='.git/info' \
+                --include='.git/config' \
+                --include='.git/HEAD' \
+                --include='.git/refs/remotes/origin/**' \
+                --include='.git/refs/heads/**' \
+                --exclude='.git/**' \
+                "${SITE_PATH}/public/application/" "${UNIFIED_TEMP_DIR}/application/" 2>/dev/null || true
+        fi
+        
+        if [ -d "${SITE_PATH}/public/packages" ]; then
+            echo "  Adding packages/ directory..."
+            mkdir -p "${UNIFIED_TEMP_DIR}/packages"
+            rsync -av \
+                --exclude='node_modules' \
+                --exclude='**/node_modules' \
+                --exclude='cache' \
+                --exclude='config/doctrine/proxies' \
+                --exclude='.git/objects' \
+                --exclude='.git/packed-refs' \
+                --exclude='.git/index' \
+                --exclude='.git/logs' \
+                --exclude='.git/hooks' \
+                --exclude='.git/info' \
+                --include='.git/config' \
+                --include='.git/HEAD' \
+                --include='.git/refs/remotes/origin/**' \
+                --include='.git/refs/heads/**' \
+                --exclude='.git/**' \
+                "${SITE_PATH}/public/packages/" "${UNIFIED_TEMP_DIR}/packages/" 2>/dev/null || true
+        fi
+        
+        # 2. Add uploaded files (if not skipping)
+        if [ "$SYNC_UPLOADED_FILES" != "skip" ]; then
+            local sync_files="y"
+            if [ "$SYNC_UPLOADED_FILES" = "ask" ]; then
+                read -p "Do you want to sync uploaded files (images, documents)? (y/n) " -n 1 -r
+                echo
+                sync_files="$REPLY"
+            fi
+            
+            if [[ $sync_files =~ ^[Yy]$ ]]; then
+                echo "  Adding uploaded files..."
+                mkdir -p "${UNIFIED_TEMP_DIR}/files"
+                if [ -d "${SITE_PATH}/public/application/files" ]; then
+                    rsync -av \
+                        --exclude='database' \
+                        --exclude='cache' \
+                        --exclude='.git' \
+                        "${SITE_PATH}/public/application/files/" "${UNIFIED_TEMP_DIR}/files/" 2>/dev/null || true
+                fi
+            fi
+        fi
+        
+        # 3. Add database (if not skipping)
+        if [ "$SYNC_DATABASE" = "auto" ]; then
+            echo "  Adding database..."
+            mkdir -p "${UNIFIED_TEMP_DIR}/database"
+            DB_FILE="database/db_${TIMESTAMP}.sql.gz"
+            mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF \
+                -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | \
+                gzip > "${UNIFIED_TEMP_DIR}/${DB_FILE}"
+            ln -sf "db_${TIMESTAMP}.sql.gz" "${UNIFIED_TEMP_DIR}/database/latest.sql.gz" 2>/dev/null || \
+                cp "${UNIFIED_TEMP_DIR}/${DB_FILE}" "${UNIFIED_TEMP_DIR}/database/latest.sql.gz"
+        fi
+        
+        # 4. Single commit and push
+        git add -A
+        if ! git diff --staged --quiet; then
+            git commit -m "Unified snapshot $(date +%Y-%m-%d\ %H:%M:%S)" || true
+            if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
+                git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
+            fi
+            git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
+            echo "✓ All components pushed to Git in single commit"
+        else
+            echo "No changes to sync"
+        fi
+        
+        cd - >/dev/null 2>&1
+    else
+        # Pull mode: use existing functions that handle tag selection
+        # Handle file syncing - always use Git
+        if [ -n "$FILES_GIT_REPO" ]; then
+            pull_config_files "${SELECTED_TAG}"  # Pass selected tag
+        else
+            print_error "FILES_GIT_REPO must be set in .deployment-config"
+            exit 1
+        fi
+        
+        # Optionally pull uploaded files
+        pull_uploaded_files "${SELECTED_TAG}"  # Pass selected tag
+        
+        # Install dependencies
+        install_dependencies
+        
+        # Handle database sync
+        if [ "$SYNC_DATABASE" = "auto" ]; then
+            if [ -z "$FILES_GIT_REPO" ]; then
+                print_error "FILES_GIT_REPO must be set for database sync"
+                exit 1
+            fi
             # Pull direction - pull from Git and import
             print_step "Syncing database from Git..."
             # Call function - errors go to stderr (visible), file path to stdout (captured)
@@ -1274,9 +1381,9 @@ main() {
                 fi
                 return 1
             fi
+        else
+            echo "Database sync disabled (SYNC_DATABASE=skip)"
         fi
-    else
-        echo "Database sync disabled (SYNC_DATABASE=skip)"
     fi
     
     # Clear caches (only when pulling)
@@ -1285,28 +1392,37 @@ main() {
     fi
     
     if [ "$SYNC_DIRECTION" = "push" ]; then
-        # Create a single unified snapshot tag after all push operations complete
+        # Create a single unified snapshot tag on the commit we just pushed
         print_step "Creating unified snapshot tag..."
-        # Use a temp directory to create the tag on the remote
-        TAG_TEMP_DIR="${SCRIPT_DIR}/.tag-create-temp"
-        if [ -d "${TAG_TEMP_DIR}" ]; then
+        # Use the unified temp directory which has the commit we just pushed
+        if [ -d "${UNIFIED_TEMP_DIR}" ] && [ -d "${UNIFIED_TEMP_DIR}/.git" ]; then
+            cd "${UNIFIED_TEMP_DIR}"
+            # Create unified tag on current HEAD (the commit we just pushed)
+            TAG_NAME=$(create_snapshot_tag "snapshot")
+            if [ -n "$TAG_NAME" ]; then
+                echo "✓ Created unified snapshot tag: ${TAG_NAME}"
+            fi
+            cd - >/dev/null 2>&1
+            rm -rf "${UNIFIED_TEMP_DIR}"
+        else
+            # Fallback: create tag in fresh checkout
+            TAG_TEMP_DIR="${SCRIPT_DIR}/.tag-create-temp"
+            if [ -d "${TAG_TEMP_DIR}" ]; then
+                rm -rf "${TAG_TEMP_DIR}"
+            fi
+            mkdir -p "${TAG_TEMP_DIR}"
+            cd "${TAG_TEMP_DIR}"
+            git init >/dev/null 2>&1
+            git remote add origin "${FILES_GIT_REPO}" >/dev/null 2>&1 || git remote set-url origin "${FILES_GIT_REPO}" >/dev/null 2>&1
+            git fetch origin "${FILES_GIT_BRANCH}" >/dev/null 2>&1
+            git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" >/dev/null 2>&1 || git checkout "${FILES_GIT_BRANCH}" >/dev/null 2>&1
+            TAG_NAME=$(create_snapshot_tag "snapshot")
+            if [ -n "$TAG_NAME" ]; then
+                echo "✓ Created unified snapshot tag: ${TAG_NAME}"
+            fi
+            cd - >/dev/null 2>&1
             rm -rf "${TAG_TEMP_DIR}"
         fi
-        mkdir -p "${TAG_TEMP_DIR}"
-        cd "${TAG_TEMP_DIR}"
-        git init >/dev/null 2>&1
-        git remote add origin "${FILES_GIT_REPO}" >/dev/null 2>&1 || git remote set-url origin "${FILES_GIT_REPO}" >/dev/null 2>&1
-        git fetch origin "${FILES_GIT_BRANCH}" >/dev/null 2>&1
-        git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" >/dev/null 2>&1 || git checkout "${FILES_GIT_BRANCH}" >/dev/null 2>&1
-        
-        # Create unified tag (not type-specific, just "snapshot")
-        TAG_NAME=$(create_snapshot_tag "snapshot")
-        if [ -n "$TAG_NAME" ]; then
-            echo "✓ Created unified snapshot tag: ${TAG_NAME}"
-        fi
-        
-        cd - >/dev/null 2>&1
-        rm -rf "${TAG_TEMP_DIR}"
         
         if [ "$SYNC_DATABASE" = "auto" ]; then
             print_step "Files and database pushed to Git - run 'pull' on target environment to complete sync"
