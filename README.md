@@ -52,14 +52,14 @@ Main bidirectional sync script. Handles both pushing data to Git and pulling dat
 **Push mode** (run on the source environment):
 - Exports database to Git
 - Pushes uploaded files to Git
-- Pushes config files (config/, themes/, blocks/, packages/) to Git
+- Pushes entire `application/` directory to Git (config, themes, blocks, packages, express, and all custom directories)
 - Creates a unified snapshot tag
 
 **Pull mode** (run on the target environment):
 - Prompts for snapshot selection (latest or specific tag)
 - Pulls database from Git and imports it
 - Pulls uploaded files from Git
-- Pulls config files from Git
+- Pulls entire `application/` directory from Git (config, themes, blocks, packages, express, and all custom directories)
 - Installs Composer dependencies
 - Clears caches
 
@@ -102,6 +102,26 @@ All configuration is done via `.deployment-config`. See `.deployment-config.exam
 2. **Snapshot Tags**: Each complete sync creates a unified tag (`snapshot-YYYY-MM-DD_HH-MM-SS`) marking a point-in-time snapshot
 3. **Incremental Syncs**: Uses rsync to only transfer files that have changed
 4. **Bidirectional**: Same script handles both directions based on the `push`/`pull` argument
+
+## When to Use This Tool vs. Migration Tool
+
+Concrete CMS provides an official [Migration Tool](https://github.com/concretecms/migration_tool) for content migration. Here's when to use each:
+
+### Use `concrete-cms-sync.sh` (This Tool) When:
+- ✅ **Migrating between identical Concrete CMS versions** - Full site clones
+- ✅ **Complete site deployment** - You need database, files, config, themes, blocks, packages all together
+- ✅ **Environment-to-environment sync** - Production ↔ Development, or any environment pairs
+- ✅ **Automated deployment** - You want a single command to sync everything
+- ✅ **Snapshot-based rollbacks** - You need point-in-time snapshots for restoration
+
+### Use Migration Tool When:
+- ✅ **Selective content migration** - You only need specific pages, files, or users
+- ✅ **Different site configurations** - Source and destination have different themes/packages
+- ✅ **Content mapping/transformation** - You need to map content between different structures
+- ✅ **Version upgrades** - Migrating between different Concrete CMS versions (5.7 → 8.x → 9.x)
+- ✅ **Partial migrations** - You want to migrate content in batches with manual review
+
+**Summary**: This script is for complete site synchronization between identical environments. The Migration Tool is for selective content migration when sites differ.
 
 ## Deployment Workflow
 

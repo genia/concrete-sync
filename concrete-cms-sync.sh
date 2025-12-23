@@ -106,7 +106,7 @@ print_deployment_plan() {
         else
             echo "  ⊘ Skip database sync (SYNC_DATABASE=skip)"
         fi
-        echo "  ✓ Push config files (config/, themes/, blocks/, packages/) to Git"
+        echo "  ✓ Push application/ directory (config, themes, blocks, packages, express, etc.) to Git"
         if [ "$SYNC_UPLOADED_FILES" != "skip" ]; then
             echo "  ✓ Push uploaded files (public/application/files/) to Git"
         else
@@ -125,7 +125,7 @@ print_deployment_plan() {
         else
             echo "  ⊘ Skip database sync (SYNC_DATABASE=skip)"
         fi
-        echo "  ✓ Pull config files (config/, themes/, blocks/, packages/) from Git"
+        echo "  ✓ Pull application/ directory (config, themes, blocks, packages, express, etc.) from Git"
         if [ "$SYNC_UPLOADED_FILES" != "skip" ]; then
             echo "  ✓ Pull uploaded files (public/application/files/) from Git"
         else
@@ -871,7 +871,7 @@ pull_config_files() {
             rm -rf "${CONFIG_TEMP_DIR}"
         fi
         
-        mkdir -p "${CONFIG_TEMP_DIR}/config"
+        mkdir -p "${CONFIG_TEMP_DIR}"
         cd "${CONFIG_TEMP_DIR}"
         git init
         git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
@@ -885,18 +885,14 @@ pull_config_files() {
         fi
         
         # Copy config files from current site
-        # Sync key Concrete CMS directories
-        if [ -d "${SITE_PATH}/public/application/config" ]; then
-            cp -r "${SITE_PATH}/public/application/config"/* "${CONFIG_TEMP_DIR}/config/" 2>/dev/null || true
-        fi
-        if [ -d "${SITE_PATH}/public/application/themes" ]; then
-            cp -r "${SITE_PATH}/public/application/themes" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
-        fi
-        if [ -d "${SITE_PATH}/public/application/blocks" ]; then
-            cp -r "${SITE_PATH}/public/application/blocks" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
-        fi
-        if [ -d "${SITE_PATH}/public/application/packages" ]; then
-            cp -r "${SITE_PATH}/public/application/packages" "${CONFIG_TEMP_DIR}/" 2>/dev/null || true
+        # Sync entire application/ directory (excluding files/ which is synced separately, and cache/)
+        # This ensures we catch all custom directories (express/, user_exports/, etc.) mentioned in docs as "and more"
+        if [ -d "${SITE_PATH}/public/application" ]; then
+            # Use rsync to copy everything except files/ and cache/
+            rsync -av \
+                --exclude='files' \
+                --exclude='cache' \
+                "${SITE_PATH}/public/application/" "${CONFIG_TEMP_DIR}/application/" 2>/dev/null || true
         fi
         
         # Commit and push
@@ -939,47 +935,63 @@ pull_config_files() {
         fi
         
         # Copy config files to local site using rsync
-        local total_config_files=0
-        local total_config_changed=0
-        
-        if [ -d "${CONFIG_TEMP_DIR}/config" ]; then
-            mkdir -p "${SITE_PATH}/public/application/config"
-            echo "  Syncing config files..."
-            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/config/" "${SITE_PATH}/public/application/config/" 2>&1)
+        # Sync entire application/ directory (excluding files/ which is synced separately, and cache/)
+        # This ensures we catch all custom directories (express/, user_exports/, etc.) mentioned in docs as "and more"
+        if [ -d "${CONFIG_TEMP_DIR}/application" ]; then
+            echo "  Syncing application directory (config, themes, blocks, packages, express, etc.)..."
+            rsync_output=$(rsync -av --stats \
+                --exclude='files' \
+                --exclude='cache' \
+                "${CONFIG_TEMP_DIR}/application/" "${SITE_PATH}/public/application/" 2>&1)
             files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+            total_config_changed=0
             if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                total_config_files=$((total_config_files + files_transferred))
-                total_config_changed=$((total_config_changed + files_transferred))
+                total_config_changed=$files_transferred
             fi
-        fi
-        if [ -d "${CONFIG_TEMP_DIR}/themes" ]; then
-            mkdir -p "${SITE_PATH}/public/application/themes"
-            echo "  Syncing themes..."
-            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/themes/" "${SITE_PATH}/public/application/themes/" 2>&1)
-            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                total_config_files=$((total_config_files + files_transferred))
-                total_config_changed=$((total_config_changed + files_transferred))
+        else
+            # Fallback: sync individual directories if application/ structure doesn't exist
+            total_config_files=0
+            total_config_changed=0
+            
+            if [ -d "${CONFIG_TEMP_DIR}/config" ]; then
+                mkdir -p "${SITE_PATH}/public/application/config"
+                echo "  Syncing config files..."
+                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/config/" "${SITE_PATH}/public/application/config/" 2>&1)
+                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                    total_config_files=$((total_config_files + files_transferred))
+                    total_config_changed=$((total_config_changed + files_transferred))
+                fi
             fi
-        fi
-        if [ -d "${CONFIG_TEMP_DIR}/blocks" ]; then
-            mkdir -p "${SITE_PATH}/public/application/blocks"
-            echo "  Syncing blocks..."
-            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/blocks/" "${SITE_PATH}/public/application/blocks/" 2>&1)
-            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                total_config_files=$((total_config_files + files_transferred))
-                total_config_changed=$((total_config_changed + files_transferred))
+            if [ -d "${CONFIG_TEMP_DIR}/themes" ]; then
+                mkdir -p "${SITE_PATH}/public/application/themes"
+                echo "  Syncing themes..."
+                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/themes/" "${SITE_PATH}/public/application/themes/" 2>&1)
+                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                    total_config_files=$((total_config_files + files_transferred))
+                    total_config_changed=$((total_config_changed + files_transferred))
+                fi
             fi
-        fi
-        if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
-            mkdir -p "${SITE_PATH}/public/application/packages"
-            echo "  Syncing packages..."
-            rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/application/packages/" 2>&1)
-            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                total_config_files=$((total_config_files + files_transferred))
-                total_config_changed=$((total_config_changed + files_transferred))
+            if [ -d "${CONFIG_TEMP_DIR}/blocks" ]; then
+                mkdir -p "${SITE_PATH}/public/application/blocks"
+                echo "  Syncing blocks..."
+                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/blocks/" "${SITE_PATH}/public/application/blocks/" 2>&1)
+                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                    total_config_files=$((total_config_files + files_transferred))
+                    total_config_changed=$((total_config_changed + files_transferred))
+                fi
+            fi
+            if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
+                mkdir -p "${SITE_PATH}/public/application/packages"
+                echo "  Syncing packages..."
+                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/application/packages/" 2>&1)
+                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                    total_config_files=$((total_config_files + files_transferred))
+                    total_config_changed=$((total_config_changed + files_transferred))
+                fi
             fi
         fi
         

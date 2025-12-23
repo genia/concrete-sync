@@ -29,6 +29,8 @@ Based on `.gitignore` files, the following are excluded:
 
 ## Deployment Methods
 
+> **Note**: For selective content migration or sites with different configurations, consider using the official [Concrete CMS Migration Tool](https://github.com/concretecms/migration_tool). This script is designed for complete site synchronization between identical environments. See [README.md](README.md#when-to-use-this-tool-vs-migration-tool) for a detailed comparison.
+
 ### Method 1: Automated Scripts (Recommended)
 
 We provide a unified deployment script that handles syncing in both directions:
@@ -40,13 +42,13 @@ This script handles bidirectional syncing between any environments using Git as 
 **Push mode** (`./concrete-cms-sync.sh push`):
 - Exports database and pushes to Git
 - Pushes uploaded files (images, documents) to Git
-- Pushes config files (themes, blocks, packages) to Git
+- Pushes entire `application/` directory to Git (config, themes, blocks, packages, express, and all custom directories)
 - Creates unified snapshot tags
 
 **Pull mode** (`./concrete-cms-sync.sh pull`):
 - Pulls database from Git and imports to local database
 - Pulls uploaded files from Git
-- Pulls config files from Git
+- Pulls entire `application/` directory from Git (config, themes, blocks, packages, express, and all custom directories)
 - Installs Composer dependencies
 - Clears caches
 
