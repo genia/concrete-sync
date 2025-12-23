@@ -56,6 +56,7 @@ This script handles bidirectional syncing between production and development usi
    - `FILES_GIT_REPO` - Git repository for syncing files, database, and configs
    - `SITE_PATH` - Path to your Concrete CMS site root
    - Database credentials (DB_HOSTNAME, DB_DATABASE, DB_USERNAME, DB_PASSWORD)
+   - `COMPOSER_DIR` (optional) - Directory containing `composer.phar` if not in PATH
 
 2. Make the script executable:
    ```bash
@@ -249,13 +250,31 @@ All file syncing now uses Git exclusively. The script automatically:
 
 This provides versioning, incremental updates, and eliminates the need for SSH file transfers.
 
-**Setup:** Configure `FILES_GIT_REPO` in `.deployment-config`:
+  **Setup:** Configure `FILES_GIT_REPO` in `.deployment-config`:
+  ```bash
+  FILES_GIT_REPO="git@github.com:user/files-repo.git"  # Or any Git URL
+  FILES_GIT_BRANCH="main"  # Branch to use
+  ```
+  
+  **Note:** The first sync may take longer as it uploads all files. Subsequent syncs are incremental.
+
+### Composer Configuration
+
+The script uses Composer to install dependencies. By default, it uses the system `composer` command (must be in your PATH). If your `composer.phar` is in a specific location, set `COMPOSER_DIR` in `.deployment-config`:
+
 ```bash
-FILES_GIT_REPO="git@github.com:user/files-repo.git"  # Or any Git URL
-FILES_GIT_BRANCH="main"  # Branch to use
+# If composer.phar is in /usr/local/bin/
+COMPOSER_DIR="/usr/local/bin"
+
+# If composer.phar is in /opt/composer/
+COMPOSER_DIR="/opt/composer"
+
+# Leave empty to use system 'composer' command (default)
+COMPOSER_DIR=""
 ```
 
-**Note:** The first sync may take longer as it uploads all files. Subsequent syncs are incremental.
+When `COMPOSER_DIR` is set, the script will use: `php ${COMPOSER_DIR}/composer.phar`  
+When `COMPOSER_DIR` is not set, the script will use: `composer` (system command)
 
 ### Setting Up Git Method
 

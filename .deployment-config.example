@@ -22,6 +22,13 @@ DB_PASSWORD=""  # Database password (consider using environment variable instead
 FILES_GIT_REPO=""  # REQUIRED: e.g., git@github.com:user/files-repo.git
 FILES_GIT_BRANCH="main"  # Branch to use for files
 
+# Composer configuration (OPTIONAL)
+# If your system has composer.phar in a specific location (not in PATH), set this
+# Leave empty to use system 'composer' command (must be in PATH)
+COMPOSER_DIR=""  # e.g., /usr/local/bin or /opt/composer (directory containing composer.phar)
+# When set, the script will use: php ${COMPOSER_DIR}/composer.phar
+# When not set, the script will use: composer (system command)
+
 # Uploaded files sync behavior
 SYNC_UPLOADED_FILES="auto"  # Options: auto, ask, skip
 
