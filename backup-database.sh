@@ -22,7 +22,7 @@ if [ "$ENV" = "prod" ]; then
     echo
     
     BACKUP_FILE="${BACKUP_DIR}/prod_db_${TIMESTAMP}.sql.gz"
-    mysqldump -h"${DB_HOST}" -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" | gzip > "${BACKUP_FILE}"
+    mysqldump --no-tablespaces -h"${DB_HOST}" -u"${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" | gzip > "${BACKUP_FILE}"
 else
     echo "Backing up development database..."
     
@@ -33,7 +33,7 @@ else
     
     source "${PROJECT_DIR}/.env"
     BACKUP_FILE="${BACKUP_DIR}/dev_db_${TIMESTAMP}.sql.gz"
-    mysqldump -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${BACKUP_FILE}"
+    mysqldump --no-tablespaces -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${BACKUP_FILE}"
 fi
 
 echo "✓ Database backed up to: ${BACKUP_FILE}"

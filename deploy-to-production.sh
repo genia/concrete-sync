@@ -253,7 +253,7 @@ export_database() {
     echo "  Database: ${DB_DATABASE}"
     echo "  User: ${DB_USERNAME}"
     
-    mysqldump -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" \
+    mysqldump --no-tablespaces -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" \
         "${DB_DATABASE}" > "${DB_FILE}"
     
     # Compress the dump
