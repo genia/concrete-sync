@@ -314,7 +314,17 @@ select_snapshot_tag() {
         echo "  Found ${tag_count} tag(s)" >&2
     fi
     
+    # Change back to original directory before cleanup
     cd - >/dev/null 2>&1
+    
+    # Re-check array count after directory change (arrays should persist, but verify)
+    tag_count=${#tag_array[@]}
+    
+    # Debug: show array contents after directory change
+    echo "  Debug: After cd back, tag_count=${tag_count}" >&2
+    for idx in "${!tag_array[@]}"; do
+        echo "  Debug: tag_array[${idx}]='${tag_array[$idx]}'" >&2
+    done
     
     if [ "$tag_count" -eq 0 ]; then
         rm -rf "${temp_dir}"
@@ -335,31 +345,6 @@ select_snapshot_tag() {
     
     rm -rf "${temp_dir}"
     
-    # Final verification - make sure we actually have tags
-    if [ ${#tag_array[@]} -eq 0 ]; then
-        echo ""
-        echo "No snapshot tags found in repository." >&2
-        echo ""
-        echo "This could mean:" >&2
-        echo "  - No snapshots have been pushed yet (run 'push' first to create tags)" >&2
-        echo "  - Tags exist but weren't fetched (check repository access)" >&2
-        echo ""
-        echo "Using latest from branch instead." >&2
-        echo ""
-        read -p "Press Enter to continue with latest, or Ctrl+C to cancel..." -r
-        echo ""
-        echo "latest"
-        return 0
-    fi
-    
-    local tag_count=${#tag_array[@]}
-    
-    # Debug: show array contents before display
-    echo "  Debug: About to display tags, tag_count=${tag_count}" >&2
-    for idx in "${!tag_array[@]}"; do
-        echo "  Debug: tag_array[${idx}]='${tag_array[$idx]}'" >&2
-    done
-    
     local page_size=10
     local current_page=0
     local start_idx=0
@@ -373,14 +358,16 @@ select_snapshot_tag() {
         
         # Display current page of tags
         local display_count=0
+        echo "  Debug: Loop params - start_idx=$start_idx, end_idx=$end_idx, tag_count=$tag_count" >&2
         for ((i=$start_idx; i<=$end_idx && i<$tag_count; i++)); do
             local tag_num=$((i + 1))
             local tag_value="${tag_array[$i]}"
+            echo "  Debug: Loop iteration i=$i, tag_value='${tag_value}'" >&2
             if [ -n "$tag_value" ]; then
                 echo "  ${tag_num}) ${tag_value}"
                 display_count=$((display_count + 1))
             else
-                echo "  Debug: tag_array[$i] is empty (tag_num=$tag_num, tag_count=$tag_count)" >&2
+                echo "  Debug: tag_array[$i] is empty (tag_num=$tag_num)" >&2
             fi
         done
         
