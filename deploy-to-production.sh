@@ -179,9 +179,18 @@ check_prerequisites() {
         exit 1
     fi
     
+    # Check if SITE_PATH points to public/ directory instead of site root
+    # If it ends with /public and has a parent with composer.json, use the parent
+    if [[ "$SITE_PATH" == */public ]] && [ -f "$(dirname "$SITE_PATH")/composer.json" ]; then
+        print_warning "SITE_PATH appears to point to public/ directory, using parent directory as site root"
+        SITE_PATH="$(dirname "$SITE_PATH")"
+        echo "  Adjusted SITE_PATH to: ${SITE_PATH}"
+    fi
+    
     # Check if it looks like a Concrete CMS site
     if [ ! -d "${SITE_PATH}/public" ] && [ ! -f "${SITE_PATH}/composer.json" ]; then
         print_warning "SITE_PATH doesn't appear to be a Concrete CMS site (no public/ or composer.json found)"
+        print_warning "Expected: site root with public/ subdirectory and composer.json"
     fi
     
     PROJECT_DIR="${SITE_PATH}"  # Use SITE_PATH as PROJECT_DIR throughout

@@ -172,9 +172,18 @@ check_prerequisites() {
         exit 1
     fi
     
+    # Check if SITE_PATH points to public/ directory instead of site root
+    # If it ends with /public and has a parent with composer.json, use the parent
+    if [[ "$SITE_PATH" == */public ]] && [ -f "$(dirname "$SITE_PATH")/composer.json" ]; then
+        print_warning "SITE_PATH appears to point to public/ directory, using parent directory as site root"
+        SITE_PATH="$(dirname "$SITE_PATH")"
+        echo "  Adjusted SITE_PATH to: ${SITE_PATH}"
+    fi
+    
     # Check if it looks like a Concrete CMS site
     if [ ! -d "${SITE_PATH}/public" ] && [ ! -f "${SITE_PATH}/composer.json" ]; then
         print_warning "SITE_PATH doesn't appear to be a Concrete CMS site (no public/ or composer.json found)"
+        print_warning "Expected: site root with public/ subdirectory and composer.json"
     fi
     
     PROJECT_DIR="${SITE_PATH}"  # Use SITE_PATH as PROJECT_DIR throughout
@@ -621,8 +630,54 @@ pull_uploaded_files() {
             git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
             
             # Copy to local files directory
+            # Ensure the target directory exists
             mkdir -p "${PROJECT_DIR}/public/application/files"
-            cp -r "${FILES_TEMP_DIR}"/* "${PROJECT_DIR}/public/application/files/" 2>/dev/null || true
+            
+            # Copy all files and directories, preserving structure
+            # Exclude database and cache directories (they're stored separately in Git)
+            if [ -n "$(ls -A "${FILES_TEMP_DIR}" 2>/dev/null)" ]; then
+                # Copy contents, excluding database and cache directories
+                for item in "${FILES_TEMP_DIR}"/*; do
+                    if [ -e "$item" ]; then
+                        item_name=$(basename "$item")
+                        # Skip database and cache directories (they're synced separately)
+                        if [ "$item_name" != "database" ] && [ "$item_name" != "cache" ]; then
+                            cp -R "$item" "${PROJECT_DIR}/public/application/files/" 2>/dev/null || {
+                                print_warning "Failed to copy: $item_name"
+                            }
+                        fi
+                    fi
+                done
+                
+                # Also copy hidden files/directories (except .git)
+                for item in "${FILES_TEMP_DIR}"/.[^.]*; do
+                    if [ -e "$item" ]; then
+                        item_name=$(basename "$item")
+                        if [ "$item_name" != ".git" ] && [ "$item_name" != ".gitkeep" ]; then
+                            cp -R "$item" "${PROJECT_DIR}/public/application/files/" 2>/dev/null || true
+                        fi
+                    fi
+                done
+                
+                # Verify some files were copied and set proper permissions
+                FILE_COUNT=$(find "${PROJECT_DIR}/public/application/files" -type f 2>/dev/null | wc -l | tr -d ' ')
+                if [ "$FILE_COUNT" -eq 0 ]; then
+                    print_warning "No files found after copy - checking source directory"
+                    echo "Source directory contents:"
+                    ls -la "${FILES_TEMP_DIR}" | head -20
+                    echo "Target directory contents:"
+                    ls -la "${PROJECT_DIR}/public/application/files" | head -20
+                else
+                    echo "  Copied ${FILE_COUNT} files to ${PROJECT_DIR}/public/application/files"
+                    # Set proper permissions (readable by web server)
+                    chmod -R u+rw "${PROJECT_DIR}/public/application/files" 2>/dev/null || true
+                    find "${PROJECT_DIR}/public/application/files" -type d -exec chmod 755 {} \; 2>/dev/null || true
+                    find "${PROJECT_DIR}/public/application/files" -type f -exec chmod 644 {} \; 2>/dev/null || true
+                    echo "  Set proper file permissions"
+                fi
+            else
+                print_warning "No files found in Git repository to copy"
+            fi
             
             echo "✓ Uploaded files synced via Git (images, documents, thumbnails)"
         fi
