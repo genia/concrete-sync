@@ -111,6 +111,35 @@ is_running_on_production() {
     return 1
 }
 
+# Setup Git credential caching for this script session
+setup_git_credentials() {
+    # Only needed for HTTPS URLs (SSH uses keys, no prompts)
+    if [[ "$FILES_GIT_REPO" != https://* ]]; then
+        return 0  # SSH URL, no credential caching needed
+    fi
+    
+    # Check if credential helper is already configured
+    if git config --global credential.helper >/dev/null 2>&1; then
+        echo "Git credential helper already configured"
+        return 0
+    fi
+    
+    # Configure Git to cache credentials for 1 hour (3600 seconds)
+    # This avoids prompting for credentials multiple times during script execution
+    # We use --global so it persists, but user can override if needed
+    git config --global credential.helper 'cache --timeout=3600' 2>/dev/null || {
+        print_warning "Could not configure Git credential caching"
+        print_warning "You may be prompted for credentials multiple times"
+        return 0
+    }
+    
+    echo "Git credential caching enabled (1 hour timeout)"
+    echo "You will be prompted for credentials once, then they will be cached for this session"
+    echo ""
+    echo "Tip: To avoid prompts entirely, use SSH URLs (git@github.com:user/repo.git)"
+    echo "     or set up SSH keys for your GitHub account"
+}
+
 # Check prerequisites
 check_prerequisites() {
     print_step "Checking prerequisites..."
@@ -684,6 +713,11 @@ main() {
     fi
     
     check_prerequisites
+    
+    # Setup Git credential caching to avoid multiple prompts
+    if [ -n "$FILES_GIT_REPO" ]; then
+        setup_git_credentials
+    fi
     
     # Handle file syncing - always use Git
     if [ -n "$FILES_GIT_REPO" ]; then
