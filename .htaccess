@@ -1,0 +1,38 @@
+# Concrete CMS .htaccess for URL rewriting
+# Place this file in the public/ directory (web root)
+#
+# Make sure both host apache configs contain the correct AllowOverride
+#
+# It should be "AllowOverride All" for your site's directory
+# If not, edit your virtual host config and add:
+# <Directory /path/to/your/site/public>
+#     AllowOverride All
+# </Directory>
+
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # If your site is in a subdirectory, uncomment and set the RewriteBase
+    # Example: if site is at http://example.com/site/, use: RewriteBase /site/
+    # RewriteBase /
+    
+    # Don't rewrite requests for existing files or directories
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    
+    # Don't rewrite requests for static assets
+    RewriteCond %{REQUEST_URI} !^/concrete/
+    RewriteCond %{REQUEST_URI} !^/application/files/
+    RewriteCond %{REQUEST_URI} !^/packages/
+    
+    # Rewrite everything else to index.php
+    RewriteRule ^(.*)$ index.php/$1 [L,QSA]
+</IfModule>
+
+# Optional: Set proper MIME types
+<IfModule mod_mime.c>
+    AddType application/javascript js
+    AddType text/css css
+</IfModule>
+
