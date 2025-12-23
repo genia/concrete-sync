@@ -885,19 +885,37 @@ pull_config_files() {
         fi
         
         # Copy config files from current site
-        # Sync entire application/ directory (excluding files/ which is synced separately, and cache/)
+        # Sync entire application/ directory (excluding files/, cache/, node_modules/, generated files, and most of .git/)
         # This ensures we catch all custom directories (express/, user_exports/, etc.) mentioned in docs as "and more"
         if [ -d "${SITE_PATH}/public/application" ]; then
-            # Use rsync to copy everything except files/ and cache/
+            # Use rsync to copy everything except files/, cache/, node_modules/, generated Doctrine proxies
+            # For .git folders, only sync minimal metadata needed to pull updates later (config, HEAD, refs)
             rsync -av \
                 --exclude='files' \
                 --exclude='cache' \
+                --exclude='node_modules' \
+                --exclude='**/node_modules' \
+                --exclude='config/doctrine/proxies' \
+                --exclude='.git/objects' \
+                --exclude='.git/packed-refs' \
+                --exclude='.git/index' \
+                --exclude='.git/logs' \
+                --exclude='.git/hooks' \
+                --exclude='.git/info' \
+                --include='.git/config' \
+                --include='.git/HEAD' \
+                --include='.git/refs/remotes/origin/**' \
+                --include='.git/refs/heads/**' \
+                --exclude='.git/**' \
                 "${SITE_PATH}/public/application/" "${CONFIG_TEMP_DIR}/application/" 2>/dev/null || true
         fi
         
         # Also sync public/packages/ (package assets, separate from application/packages/)
+        # Exclude node_modules/ from packages as well
         if [ -d "${SITE_PATH}/public/packages" ]; then
             rsync -av \
+                --exclude='node_modules' \
+                --exclude='**/node_modules' \
                 "${SITE_PATH}/public/packages/" "${CONFIG_TEMP_DIR}/packages/" 2>/dev/null || true
         fi
         
@@ -941,8 +959,8 @@ pull_config_files() {
         fi
         
         # Copy config files to local site using rsync
-        # Sync entire application/ directory (excluding files/ which is synced separately, and cache/)
-        # This ensures we catch all custom directories (express/, user_exports/, etc.) mentioned in docs as "and more"
+        # Sync entire application/ directory (excluding files/, cache/, node_modules/, and generated files)
+        # For .git folders, only sync minimal metadata needed to pull updates later (config, HEAD, refs)
         total_config_changed=0
         
         if [ -d "${CONFIG_TEMP_DIR}/application" ]; then
@@ -950,6 +968,20 @@ pull_config_files() {
             rsync_output=$(rsync -av --stats \
                 --exclude='files' \
                 --exclude='cache' \
+                --exclude='node_modules' \
+                --exclude='**/node_modules' \
+                --exclude='config/doctrine/proxies' \
+                --exclude='.git/objects' \
+                --exclude='.git/packed-refs' \
+                --exclude='.git/index' \
+                --exclude='.git/logs' \
+                --exclude='.git/hooks' \
+                --exclude='.git/info' \
+                --include='.git/config' \
+                --include='.git/HEAD' \
+                --include='.git/refs/remotes/origin/**' \
+                --include='.git/refs/heads/**' \
+                --exclude='.git/**' \
                 "${CONFIG_TEMP_DIR}/application/" "${SITE_PATH}/public/application/" 2>&1)
             files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
             if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
@@ -958,10 +990,13 @@ pull_config_files() {
         fi
         
         # Also sync public/packages/ (package assets, separate from application/packages/)
+        # Exclude node_modules/ from packages as well
         if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
             echo "  Syncing packages directory..."
             mkdir -p "${SITE_PATH}/public/packages"
             rsync_output=$(rsync -av --stats \
+                --exclude='node_modules' \
+                --exclude='**/node_modules' \
                 "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/packages/" 2>&1)
             files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
             if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
