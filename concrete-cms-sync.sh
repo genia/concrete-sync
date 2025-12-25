@@ -1268,14 +1268,16 @@ BOOTSTRAP_START
 clear_caches() {
     print_step "Clearing caches..."
     
-    # Remove Doctrine proxies (they contain hardcoded absolute paths and will be regenerated)
-    # Detect structure: check for public/application first (composer structure), then application (flat)
+    # NOTE: We do NOT remove Doctrine proxies here because they're required for c5:clear-cache to run.
+    # Proxies are excluded from syncing (so they won't be synced with wrong paths),
+    # but if they exist, we keep them. Doctrine will automatically regenerate them
+    # with correct paths when accessed if the directory is writable.
+    
+    # Ensure proxies directory exists and is writable (so Doctrine can regenerate if needed)
     if [ -d "${SITE_PATH}/public/application/config/doctrine/proxies" ]; then
-        echo "  Removing Doctrine proxies (will be regenerated)..."
-        rm -rf "${SITE_PATH}/public/application/config/doctrine/proxies"/*.php 2>/dev/null || true
+        chmod 775 "${SITE_PATH}/public/application/config/doctrine/proxies" 2>/dev/null || true
     elif [ -d "${SITE_PATH}/application/config/doctrine/proxies" ]; then
-        echo "  Removing Doctrine proxies (will be regenerated)..."
-        rm -rf "${SITE_PATH}/application/config/doctrine/proxies"/*.php 2>/dev/null || true
+        chmod 775 "${SITE_PATH}/application/config/doctrine/proxies" 2>/dev/null || true
     fi
     
     if [ -f "${SITE_PATH}/vendor/bin/concrete" ] || [ -f "${SITE_PATH}/concrete/vendor/bin/concrete" ]; then
