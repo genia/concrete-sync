@@ -896,6 +896,7 @@ pull_config_files() {
                 --exclude='node_modules' \
                 --exclude='**/node_modules' \
                 --exclude='config/doctrine/proxies' \
+                --exclude='bootstrap/' \
                 --exclude='.git/objects' \
                 --exclude='.git/packed-refs' \
                 --exclude='.git/index' \
@@ -987,12 +988,13 @@ pull_config_files() {
         
         if [ -d "${CONFIG_TEMP_DIR}/application" ]; then
             echo "  Syncing application directory (config, themes, blocks, packages, express, etc.)..."
-            rsync_output=$(rsync -av --stats \
+            rsync_output=$(            rsync -av --stats \
                 --exclude='files' \
                 --exclude='cache' \
                 --exclude='node_modules' \
                 --exclude='**/node_modules' \
                 --exclude='config/doctrine/proxies' \
+                --exclude='bootstrap/' \
                 --exclude='.git/objects' \
                 --exclude='.git/packed-refs' \
                 --exclude='.git/index' \
@@ -1112,13 +1114,82 @@ install_dependencies() {
     echo "✓ Dependencies installed"
 }
 
+# Fix common post-sync issues (Doctrine proxies, bootstrap files, etc.)
+fix_site_issues() {
+    print_step "Fixing common post-sync issues..."
+    
+    local fixed_anything=false
+    
+    # Detect structure: check for public/application first (composer structure), then application (flat)
+    local app_path=""
+    if [ -d "${SITE_PATH}/public/application" ]; then
+        app_path="${SITE_PATH}/public/application"
+    elif [ -d "${SITE_PATH}/application" ]; then
+        app_path="${SITE_PATH}/application"
+    fi
+    
+    if [ -n "$app_path" ]; then
+        # Remove Doctrine proxies (they contain hardcoded absolute paths and will be regenerated)
+        if [ -d "${app_path}/config/doctrine/proxies" ]; then
+            local proxy_count=$(find "${app_path}/config/doctrine/proxies" -name "*.php" 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$proxy_count" -gt 0 ]; then
+                echo "  Removing ${proxy_count} Doctrine proxy file(s) (will be regenerated)..."
+                rm -rf "${app_path}/config/doctrine/proxies"/*.php 2>/dev/null || true
+                fixed_anything=true
+            fi
+        fi
+        
+        # Remove bootstrap directory if it was synced (should be generated locally)
+        if [ -d "${app_path}/bootstrap" ]; then
+            echo "  Removing synced bootstrap/ directory (should be generated locally)..."
+            rm -rf "${app_path}/bootstrap" 2>/dev/null || true
+            fixed_anything=true
+        fi
+    fi
+    
+    # Clear caches (this will regenerate proxies and bootstrap if needed)
+    if [ -f "${SITE_PATH}/vendor/bin/concrete" ] || [ -f "${SITE_PATH}/concrete/vendor/bin/concrete" ]; then
+        cd "${SITE_PATH}"
+        echo "  Clearing caches..."
+        # Try concrete/vendor first (flat structure), then vendor (composer structure)
+        if [ -f "concrete/vendor/bin/concrete" ]; then
+            ./concrete/vendor/bin/concrete c5:clear-cache 2>/dev/null || true
+        else
+            ./vendor/bin/concrete c5:clear-cache 2>/dev/null || true
+        fi
+        fixed_anything=true
+    fi
+    
+    if [ "$fixed_anything" = true ]; then
+        echo "✓ Site issues fixed"
+        echo "  Note: Doctrine proxies and bootstrap files will be regenerated automatically on next page load"
+    else
+        echo "✓ No issues found to fix"
+    fi
+}
+
 # Clear caches
 clear_caches() {
     print_step "Clearing caches..."
     
-    if [ -f "${SITE_PATH}/vendor/bin/concrete" ]; then
+    # Remove Doctrine proxies (they contain hardcoded absolute paths and will be regenerated)
+    # Detect structure: check for public/application first (composer structure), then application (flat)
+    if [ -d "${SITE_PATH}/public/application/config/doctrine/proxies" ]; then
+        echo "  Removing Doctrine proxies (will be regenerated)..."
+        rm -rf "${SITE_PATH}/public/application/config/doctrine/proxies"/*.php 2>/dev/null || true
+    elif [ -d "${SITE_PATH}/application/config/doctrine/proxies" ]; then
+        echo "  Removing Doctrine proxies (will be regenerated)..."
+        rm -rf "${SITE_PATH}/application/config/doctrine/proxies"/*.php 2>/dev/null || true
+    fi
+    
+    if [ -f "${SITE_PATH}/vendor/bin/concrete" ] || [ -f "${SITE_PATH}/concrete/vendor/bin/concrete" ]; then
         cd "${SITE_PATH}"
-        ./vendor/bin/concrete c5:clear-cache
+        # Try concrete/vendor first (flat structure), then vendor (composer structure)
+        if [ -f "concrete/vendor/bin/concrete" ]; then
+            ./concrete/vendor/bin/concrete c5:clear-cache
+        else
+            ./vendor/bin/concrete c5:clear-cache
+        fi
     fi
     
     echo "✓ Caches cleared"
@@ -1128,12 +1199,13 @@ clear_caches() {
 main() {
     # Parse command-line arguments - direction is REQUIRED
     if [ $# -eq 0 ]; then
-        print_error "Direction argument is required"
+        print_error "Command argument is required"
         echo ""
-        echo "Usage: $0 [push|pull]"
+        echo "Usage: $0 [push|pull|fix]"
         echo ""
         echo "  push  - Push files/database from current environment to Git"
         echo "  pull  - Pull files/database from Git to current environment"
+        echo "  fix   - Fix common post-sync issues (Doctrine proxies, bootstrap files, caches)"
         echo ""
         echo "Use --help for more information"
         exit 1
@@ -1143,18 +1215,25 @@ main() {
         push|pull)
             SYNC_DIRECTION="$1"
             ;;
+        fix)
+            # Fix mode: just fix issues, no syncing
+            check_prerequisites
+            fix_site_issues
+            exit 0
+            ;;
         -h|--help)
-            echo "Usage: $0 [push|pull]"
+            echo "Usage: $0 [push|pull|fix]"
             echo ""
             echo "  push  - Push files/database from current environment to Git"
             echo "  pull  - Pull files/database from Git to current environment"
+            echo "  fix   - Fix common post-sync issues (Doctrine proxies, bootstrap files, caches)"
             echo ""
-            echo "The direction argument is REQUIRED."
+            echo "The command argument is REQUIRED."
             exit 0
             ;;
         *)
             print_error "Invalid argument: $1"
-            print_error "Usage: $0 [push|pull]"
+            print_error "Usage: $0 [push|pull|fix]"
             print_error "Use --help for more information"
             exit 1
             ;;
@@ -1245,6 +1324,7 @@ main() {
                 --exclude='node_modules' \
                 --exclude='**/node_modules' \
                 --exclude='config/doctrine/proxies' \
+                --exclude='bootstrap/' \
                 --exclude='.git/objects' \
                 --exclude='.git/packed-refs' \
                 --exclude='.git/index' \
