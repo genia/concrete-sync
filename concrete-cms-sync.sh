@@ -1129,20 +1129,18 @@ fix_site_issues() {
     fi
     
     if [ -n "$app_path" ]; then
-        # Remove Doctrine proxies (they contain hardcoded absolute paths and will be regenerated)
-        # Ensure the directory exists and is writable
+        # Ensure Doctrine proxies directory exists and is writable
+        # NOTE: We do NOT remove proxies here because they're required for the site to load.
+        # Proxies with hardcoded paths from other environments will fail when accessed,
+        # and Doctrine will automatically regenerate them if the directory is writable.
         mkdir -p "${app_path}/config/doctrine/proxies"
-        chmod 755 "${app_path}/config/doctrine/proxies" 2>/dev/null || true
+        chmod 775 "${app_path}/config/doctrine/proxies" 2>/dev/null || true
         
-        if [ -d "${app_path}/config/doctrine/proxies" ]; then
-            local proxy_count=$(find "${app_path}/config/doctrine/proxies" -name "*.php" 2>/dev/null | wc -l | tr -d ' ')
-            if [ "$proxy_count" -gt 0 ]; then
-                echo "  Removing ${proxy_count} Doctrine proxy file(s) (will be regenerated on next page load)..."
-                rm -rf "${app_path}/config/doctrine/proxies"/*.php 2>/dev/null || true
-                fixed_anything=true
-            else
-                echo "  Doctrine proxies directory is ready (will be regenerated on next page load)"
-            fi
+        local proxy_count=$(find "${app_path}/config/doctrine/proxies" -name "*.php" 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$proxy_count" -gt 0 ]; then
+            echo "  Doctrine proxies directory ready (${proxy_count} file(s) - will auto-regenerate if paths are wrong)"
+        else
+            echo "  Doctrine proxies directory ready (will be generated on first page load)"
         fi
         
         # Regenerate bootstrap directory if missing (required for Concrete CMS)
