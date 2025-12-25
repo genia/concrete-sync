@@ -1139,10 +1139,97 @@ fix_site_issues() {
             fi
         fi
         
-        # Remove bootstrap directory if it was synced (should be generated locally)
-        if [ -d "${app_path}/bootstrap" ]; then
-            echo "  Removing synced bootstrap/ directory (should be generated locally)..."
-            rm -rf "${app_path}/bootstrap" 2>/dev/null || true
+        # Regenerate bootstrap directory if missing (required for Concrete CMS)
+        if [ ! -d "${app_path}/bootstrap" ] || [ ! -f "${app_path}/bootstrap/autoload.php" ]; then
+            echo "  Regenerating bootstrap/ directory..."
+            mkdir -p "${app_path}/bootstrap"
+            
+            # Detect vendor location (composer structure vs flat structure)
+            local vendor_path=""
+            if [ -d "${SITE_PATH}/vendor" ]; then
+                vendor_path="../../../vendor"
+            elif [ -d "${SITE_PATH}/concrete/vendor" ]; then
+                vendor_path="../../concrete/vendor"
+            else
+                vendor_path="../../../vendor"  # Default fallback
+            fi
+            
+            # Create autoload.php
+            cat > "${app_path}/bootstrap/autoload.php" << 'BOOTSTRAP_AUTOLOAD'
+<?php
+
+defined('C5_EXECUTE') or die('Access Denied.');
+
+# Load in the composer vendor files
+# For flat structure: vendor is at concrete/vendor/
+# For public/ structure: vendor is at ../../../vendor/ (from public/application/bootstrap/)
+# Try flat structure first, then fall back to public structure
+if (file_exists(__DIR__ . "/../../concrete/vendor/autoload.php")) {
+    require_once __DIR__ . "/../../concrete/vendor/autoload.php";
+    $vendor_path = __DIR__ . "/../../concrete/vendor";
+} else {
+    require_once __DIR__ . "/../../../vendor/autoload.php";
+    $vendor_path = __DIR__ . "/../../../vendor";
+}
+
+# Try loading in environment info
+try {
+    (new \Symfony\Component\Dotenv\Dotenv('CONCRETE5_ENV'))
+        ->usePutenv()->load(__DIR__ . '/../../../.env');
+} catch (\Symfony\Component\Dotenv\Exception\PathException $e) {
+    // Ignore missing file exception
+}
+
+# Add the vendor directory to the include path
+ini_set('include_path', $vendor_path . PATH_SEPARATOR . get_include_path());
+BOOTSTRAP_AUTOLOAD
+            
+            # Create app.php (custom application handler - can be customized)
+            cat > "${app_path}/bootstrap/app.php" << 'BOOTSTRAP_APP'
+<?php
+
+/* @var Concrete\Core\Application\Application $app */
+/* @var Concrete\Core\Console\Application $console only set in CLI environment */
+
+/*
+ * ----------------------------------------------------------------------------
+ * # Custom Application Handler
+ *
+ * You can customize this file to add custom routes, bindings, events, etc.
+ * ----------------------------------------------------------------------------
+ */
+BOOTSTRAP_APP
+            
+            # Create start.php (instantiates Concrete CMS application)
+            cat > "${app_path}/bootstrap/start.php" << 'BOOTSTRAP_START'
+<?php
+
+use Concrete\Core\Application\Application;
+
+/*
+ * ----------------------------------------------------------------------------
+ * Instantiate Concrete
+ * ----------------------------------------------------------------------------
+ */
+$app = new Application();
+
+/*
+ * ----------------------------------------------------------------------------
+ * Detect the environment based on the hostname of the server
+ * ----------------------------------------------------------------------------
+ */
+$app->detectEnvironment([
+    'local' => [
+        'hostname',
+    ],
+    'production' => [
+        'live.site',
+    ],
+]);
+
+return $app;
+BOOTSTRAP_START
+            
             fixed_anything=true
         fi
     fi
@@ -1162,7 +1249,7 @@ fix_site_issues() {
     
     if [ "$fixed_anything" = true ]; then
         echo "✓ Site issues fixed"
-        echo "  Note: Doctrine proxies and bootstrap files will be regenerated automatically on next page load"
+        echo "  Note: Doctrine proxies will be regenerated automatically on next page load"
     else
         echo "✓ No issues found to fix"
     fi
