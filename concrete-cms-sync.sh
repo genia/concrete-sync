@@ -1255,17 +1255,11 @@ BOOTSTRAP_START
         fi
         fixed_anything=true
         
-        # Attempt to pre-generate Doctrine proxies for all entities (including package entities)
-        # This helps avoid lazy-generation failures when entities are first accessed
-        echo "  Attempting to pre-generate Doctrine proxies..."
-        if [ -f "concrete/vendor/bin/concrete" ]; then
-            # Try to trigger proxy generation by running a simple command that loads entities
-            ./concrete/vendor/bin/concrete c5:express:rebuild 2>/dev/null || true
-        else
-            ./vendor/bin/concrete c5:express:rebuild 2>/dev/null || true
-        fi
-        echo "  Note: Proxies will also be auto-generated when entities are accessed"
-        echo "  If you still see proxy errors, ensure the proxies directory is writable by the web server"
+        # Note: Doctrine proxies are generated lazily when entities are first accessed
+        # We can't pre-generate them via CLI, but ensuring the directory is writable
+        # (done above) allows Doctrine to generate them automatically when needed
+        echo "  Note: Doctrine proxies will be auto-generated when entities are accessed"
+        echo "  If you see proxy errors, ensure the proxies directory is writable by the web server"
     fi
     
     if [ "$fixed_anything" = true ]; then
