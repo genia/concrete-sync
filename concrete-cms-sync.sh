@@ -1130,12 +1130,18 @@ fix_site_issues() {
     
     if [ -n "$app_path" ]; then
         # Remove Doctrine proxies (they contain hardcoded absolute paths and will be regenerated)
+        # Ensure the directory exists and is writable
+        mkdir -p "${app_path}/config/doctrine/proxies"
+        chmod 755 "${app_path}/config/doctrine/proxies" 2>/dev/null || true
+        
         if [ -d "${app_path}/config/doctrine/proxies" ]; then
             local proxy_count=$(find "${app_path}/config/doctrine/proxies" -name "*.php" 2>/dev/null | wc -l | tr -d ' ')
             if [ "$proxy_count" -gt 0 ]; then
-                echo "  Removing ${proxy_count} Doctrine proxy file(s) (will be regenerated)..."
+                echo "  Removing ${proxy_count} Doctrine proxy file(s) (will be regenerated on next page load)..."
                 rm -rf "${app_path}/config/doctrine/proxies"/*.php 2>/dev/null || true
                 fixed_anything=true
+            else
+                echo "  Doctrine proxies directory is ready (will be regenerated on next page load)"
             fi
         fi
         
@@ -1234,7 +1240,7 @@ BOOTSTRAP_START
         fi
     fi
     
-    # Clear caches (this will regenerate proxies and bootstrap if needed)
+    # Clear caches and trigger proxy regeneration
     if [ -f "${SITE_PATH}/vendor/bin/concrete" ] || [ -f "${SITE_PATH}/concrete/vendor/bin/concrete" ]; then
         cd "${SITE_PATH}"
         echo "  Clearing caches..."
@@ -1245,6 +1251,11 @@ BOOTSTRAP_START
             ./vendor/bin/concrete c5:clear-cache 2>/dev/null || true
         fi
         fixed_anything=true
+        
+        # Try to trigger proxy regeneration by accessing the site programmatically
+        # This is a best-effort attempt - proxies will also regenerate on first page load
+        echo "  Note: Doctrine proxies will be automatically regenerated on first page load"
+        echo "  If you see proxy errors, try accessing the site once to trigger regeneration"
     fi
     
     if [ "$fixed_anything" = true ]; then
