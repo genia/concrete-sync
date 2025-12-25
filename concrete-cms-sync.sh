@@ -1145,7 +1145,10 @@ fix_site_issues() {
             echo "  Doctrine proxies directory ready (${proxy_count} file(s) - will auto-regenerate if paths are wrong)"
         else
             echo "  Doctrine proxies directory ready (will be generated on first entity access)"
-            echo "  WARNING: If you see proxy errors, ensure the directory is writable by the web server"
+            echo "  WARNING: If you see proxy errors (especially with Community Store), ensure:"
+            echo "    1. The directory is writable by the web server user"
+            echo "    2. Access a page that uses the entities to trigger proxy generation"
+            echo "    3. Some packages (like Community Store) don't pre-generate proxies and may fail on first access"
         fi
         
         # Regenerate bootstrap directory if missing (required for Concrete CMS)
@@ -1243,23 +1246,29 @@ BOOTSTRAP_START
         fi
     fi
     
-    # Clear caches and attempt to pre-generate proxies
+    # Clear caches and regenerate Doctrine proxies
     if [ -f "${SITE_PATH}/vendor/bin/concrete" ] || [ -f "${SITE_PATH}/concrete/vendor/bin/concrete" ]; then
         cd "${SITE_PATH}"
         echo "  Clearing caches..."
         # Try concrete/vendor first (flat structure), then vendor (composer structure)
         if [ -f "concrete/vendor/bin/concrete" ]; then
-            ./concrete/vendor/bin/concrete c5:clear-cache 2>/dev/null || true
+            CONCRETE_CMD="./concrete/vendor/bin/concrete"
         else
-            ./vendor/bin/concrete c5:clear-cache 2>/dev/null || true
+            CONCRETE_CMD="./vendor/bin/concrete"
         fi
+        
+        $CONCRETE_CMD c5:clear-cache 2>/dev/null || true
         fixed_anything=true
         
-        # Note: Doctrine proxies are generated lazily when entities are first accessed
-        # We can't pre-generate them via CLI, but ensuring the directory is writable
-        # (done above) allows Doctrine to generate them automatically when needed
-        echo "  Note: Doctrine proxies will be auto-generated when entities are accessed"
-        echo "  If you see proxy errors, ensure the proxies directory is writable by the web server"
+        # Generate Doctrine proxies for all entities (including Community Store and other packages)
+        echo "  Regenerating Doctrine proxies..."
+        $CONCRETE_CMD orm:generate-proxies 2>/dev/null || true
+        
+        if [ $? -eq 0 ]; then
+            echo "  ✓ Doctrine proxies regenerated"
+        else
+            echo "  ⚠ Proxy generation may have failed - ensure proxies directory is writable by web server"
+        fi
     fi
     
     if [ "$fixed_anything" = true ]; then
