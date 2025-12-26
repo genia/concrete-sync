@@ -1286,10 +1286,20 @@ clear_caches() {
         cd "${SITE_PATH}"
         # Try concrete/vendor first (flat structure), then vendor (composer structure)
         if [ -f "concrete/vendor/bin/concrete" ]; then
-            ./concrete/vendor/bin/concrete c5:clear-cache
+            CONCRETE_CMD="./concrete/vendor/bin/concrete"
         else
-            ./vendor/bin/concrete c5:clear-cache
+            CONCRETE_CMD="./vendor/bin/concrete"
         fi
+        
+        # Clear all caches (including page cache, dashboard menu cache, etc.)
+        echo "  Clearing all caches..."
+        $CONCRETE_CMD c5:clear-cache 2>/dev/null || true
+        
+        # Clear Doctrine caches (can cause stale page references and dashboard menu issues)
+        echo "  Clearing Doctrine caches..."
+        $CONCRETE_CMD orm:clear-cache:metadata 2>/dev/null || true
+        $CONCRETE_CMD orm:clear-cache:query 2>/dev/null || true
+        $CONCRETE_CMD orm:clear-cache:result 2>/dev/null || true
     fi
     
     echo "✓ Caches cleared"
