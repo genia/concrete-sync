@@ -16,9 +16,7 @@ NC='\033[0m' # No Color
 
 # Configuration - EDIT THESE VALUES or use .deployment-config file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FILES_TEMP_DIR="${SCRIPT_DIR}/.files-git-temp"
-DB_TEMP_DIR="${SCRIPT_DIR}/.db-git-temp"
-CONFIG_TEMP_DIR="${SCRIPT_DIR}/.config-git-temp"
+UNIFIED_TEMP_DIR="${SCRIPT_DIR}/.unified-temp"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Default values (can be overridden by .deployment-config or environment variables)
@@ -432,12 +430,12 @@ check_prerequisites() {
     command -v rsync >/dev/null 2>&1 || { print_error "rsync is required but not installed"; exit 1; }
     
     # FILES_GIT_REPO is required (we use Git exclusively)
-    if [ -z "$FILES_GIT_REPO" ]; then
-        print_error "FILES_GIT_REPO must be set in .deployment-config"
+            if [ -z "$FILES_GIT_REPO" ]; then
+                print_error "FILES_GIT_REPO must be set in .deployment-config"
         print_error "This script uses Git exclusively for all syncing operations"
-        exit 1
-    fi
-    
+                exit 1
+            fi
+            
     # Set path (behavior is controlled by push/pull argument)
     echo "✓ Site path: ${SITE_PATH}"
     
@@ -455,175 +453,6 @@ check_prerequisites() {
     echo "✓ All prerequisites met"
 }
 
-# Export database and push to Git
-export_database_to_git() {
-    print_step "Exporting database and pushing to Git..."
-    
-    if [ -z "$FILES_GIT_REPO" ]; then
-        print_error "FILES_GIT_REPO must be configured for Git-based database sync"
-        return 1
-    fi
-    
-    # DB credentials are already loaded from .deployment-config
-    echo "Exporting database..."
-    echo "  Host: ${DB_HOSTNAME}"
-    echo "  Database: ${DB_DATABASE}"
-    echo "  User: ${DB_USERNAME}"
-    
-    # Create temp directory for Git operations
-    if [ -d "${DB_TEMP_DIR}" ]; then
-        rm -rf "${DB_TEMP_DIR}"
-    fi
-    mkdir -p "${DB_TEMP_DIR}/database"
-    
-    cd "${DB_TEMP_DIR}"
-    git init
-    git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
-    
-    # Try to fetch existing branch
-    git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
-    if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
-        git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
-    else
-        git checkout -b "${FILES_GIT_BRANCH}"
-    fi
-    
-    # Export database to compressed file
-    DB_FILE="database/db_${TIMESTAMP}.sql.gz"
-    mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}"
-    
-    # Keep only the latest database backup (remove old ones)
-    find database/ -name "db_*.sql.gz" -type f ! -name "db_${TIMESTAMP}.sql.gz" -delete
-    
-    # Also create/update a symlink or copy to "latest.sql.gz" for easy access
-    ln -sf "db_${TIMESTAMP}.sql.gz" "database/latest.sql.gz" 2>/dev/null || \
-        cp "${DB_FILE}" "database/latest.sql.gz"
-    
-    # Commit and push
-    git add -A
-    if ! git diff --staged --quiet; then
-        git commit -m "Database backup $(date +%Y-%m-%d\ %H:%M:%S)" || true
-        # Pull first to merge any remote changes, then push
-        if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
-            git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
-        fi
-        git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
-        echo "✓ Database exported and pushed to Git"
-    else
-        echo "No database changes to sync"
-    fi
-    
-    echo "${DB_FILE}"
-}
-
-# Pull database from Git and return path to file
-pull_database_from_git() {
-    local selected_tag="${1:-latest}"  # Tag to checkout, or "latest" for branch HEAD
-    
-    print_step "Pulling database from Git..."
-    
-    if [ -z "$FILES_GIT_REPO" ]; then
-        print_error "FILES_GIT_REPO must be configured for Git-based database sync"
-        return 1
-    fi
-    
-    # Create temp directory for Git operations
-    if [ -d "${DB_TEMP_DIR}" ]; then
-        rm -rf "${DB_TEMP_DIR}"
-    fi
-    mkdir -p "${DB_TEMP_DIR}"
-    
-    cd "${DB_TEMP_DIR}" || {
-        print_error "Failed to change to temp directory: ${DB_TEMP_DIR}"
-        return 1
-    }
-    
-    # All git commands must send ALL output (stdout and stderr) to stderr to avoid interfering with stdout capture
-    # This ensures only the file path is captured, not git command output
-    # Pattern: { command 2>&1; } >&2 redirects both stdout and stderr to stderr
-    { git init 2>&1; } >&2 || {
-        print_error "Failed to initialize Git repository"
-        return 1
-    }
-    
-    { git remote add origin "${FILES_GIT_REPO}" 2>&1; } >&2 || { git remote set-url origin "${FILES_GIT_REPO}" 2>&1; } >&2 || {
-        print_error "Failed to set Git remote: ${FILES_GIT_REPO}"
-        return 1
-    }
-    
-    # Fetch from Git repository including tags (send all output to stderr)
-    if ! { git fetch origin "${FILES_GIT_BRANCH}" "refs/tags/*:refs/tags/*" 2>&1; } >&2; then
-        print_error "Failed to fetch from Git repository"
-        print_error "Repository: ${FILES_GIT_REPO}"
-        print_error "Branch: ${FILES_GIT_BRANCH}"
-        print_error "Make sure the repository exists and you have access"
-        return 1
-    fi
-    
-    # Checkout based on tag or branch
-    if [ "$selected_tag" = "latest" ]; then
-        # Checkout the branch (send all output to stderr)
-        if ! ({ git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>&1; } >&2) && ! ({ git checkout "${FILES_GIT_BRANCH}" 2>&1; } >&2); then
-            print_error "Failed to checkout branch: ${FILES_GIT_BRANCH}"
-            print_error "Make sure the branch exists in the repository"
-            return 1
-        fi
-        echo "  Using latest snapshot from branch: ${FILES_GIT_BRANCH}" >&2
-    else
-        # Checkout the specific tag
-        if ! { git checkout "${selected_tag}" 2>&1; } >&2; then
-            print_error "Failed to checkout tag: ${selected_tag}"
-            print_error "Make sure the tag exists in the repository"
-            return 1
-        fi
-        echo "  Using snapshot tag: ${selected_tag}" >&2
-    fi
-    
-    # Check if database directory exists
-    if [ ! -d "database" ]; then
-        print_error "No 'database' directory found in Git repository"
-        print_error "Make sure database has been exported and pushed to Git"
-        print_error "Expected path in repo: database/latest.sql.gz or database/db_*.sql.gz"
-        return 1
-    fi
-    
-    # Find the latest database file (use absolute path)
-    if [ -f "database/latest.sql.gz" ]; then
-        DB_FILE="${DB_TEMP_DIR}/database/latest.sql.gz"
-        if [ ! -f "${DB_FILE}" ]; then
-            print_error "Database file not found: ${DB_FILE}"
-            return 1
-        fi
-        echo "✓ Database pulled from Git: ${DB_FILE}" >&2
-        echo -n "${DB_FILE}"  # Only file path to stdout (no newline)
-    elif [ -n "$(find database/ -name "db_*.sql.gz" -type f 2>/dev/null | head -1)" ]; then
-        # Find the most recent database file
-        DB_FILE_RELATIVE=$(find database/ -name "db_*.sql.gz" -type f | sort -r | head -1)
-        if [ -z "$DB_FILE_RELATIVE" ]; then
-            print_error "No database files found in database/ directory"
-            return 1
-        fi
-        DB_FILE="${DB_TEMP_DIR}/${DB_FILE_RELATIVE}"
-        if [ ! -f "${DB_FILE}" ]; then
-            print_error "Database file not found: ${DB_FILE}"
-            return 1
-        fi
-        echo "✓ Database pulled from Git: ${DB_FILE}" >&2
-        echo -n "${DB_FILE}"  # Only file path to stdout (no newline)
-    else
-        print_error "No database file found in Git repository"
-        print_error "Make sure database has been exported and pushed to Git"
-        print_error "Expected files: database/latest.sql.gz or database/db_*.sql.gz"
-        print_error "Current directory contents:"
-        ls -la . 2>/dev/null || true
-        if [ -d "database" ]; then
-            echo "Database directory contents:"
-            ls -la database/ 2>/dev/null || true
-        fi
-        return 1
-    fi
-}
-
 # Export database (legacy function, kept for compatibility)
 export_database() {
     print_step "Exporting database..."
@@ -637,9 +466,9 @@ export_database() {
     echo "Exporting database..."
     
     # Use DB credentials from .deployment-config
-    echo "  Host: ${DB_HOSTNAME}"
-    echo "  Database: ${DB_DATABASE}"
-    echo "  User: ${DB_USERNAME}"
+        echo "  Host: ${DB_HOSTNAME}"
+        echo "  Database: ${DB_DATABASE}"
+        echo "  User: ${DB_USERNAME}"
     mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${DB_FILE}.gz"
     
     echo "✓ Database exported to ${DB_FILE}.gz"
@@ -696,410 +525,6 @@ import_database() {
     echo "✓ Database imported"
 }
 
-# Sync uploaded files via Git (handles both push and pull)
-# This syncs all uploaded images, documents, and thumbnails from public/application/files/
-pull_uploaded_files() {
-    print_step "Syncing uploaded files (images, documents, thumbnails)..."
-    
-    # Check sync behavior setting
-    if [ "$SYNC_UPLOADED_FILES" = "skip" ]; then
-        echo "Skipping uploaded files sync (SYNC_UPLOADED_FILES=skip)"
-        return 0
-    fi
-    
-    if [ "$SYNC_UPLOADED_FILES" = "skip" ]; then
-        echo "Skipping uploaded files sync (SYNC_UPLOADED_FILES=skip)"
-        return 0
-    elif [ "$SYNC_UPLOADED_FILES" = "ask" ]; then
-        read -p "Do you want to sync uploaded files (images, documents)? (y/n) " -n 1 -r
-        echo
-        SYNC_YES="$REPLY"
-    else
-        # auto
-        SYNC_YES="y"
-    fi
-    
-    if [[ $SYNC_YES =~ ^[Yy]$ ]]; then
-        if [ -z "$FILES_GIT_REPO" ]; then
-            print_error "FILES_GIT_REPO must be configured in .deployment-config"
-            return 1
-        fi
-        
-        echo "Syncing uploaded files via Git..."
-        
-        # Push or pull based on SYNC_DIRECTION
-        if [ "$SYNC_DIRECTION" = "push" ]; then
-            # Push mode: export files to Git
-            # Clean up and recreate temp directory to avoid conflicts
-            if [ -d "${FILES_TEMP_DIR}" ]; then
-                echo "Cleaning up existing temp directory..."
-                rm -rf "${FILES_TEMP_DIR}"
-            fi
-            
-            mkdir -p "${FILES_TEMP_DIR}"
-            cd "${FILES_TEMP_DIR}"
-            git init
-            git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
-            
-            # Try to fetch existing branch
-            git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
-            if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
-                git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
-            else
-                git checkout -b "${FILES_GIT_BRANCH}"
-            fi
-            
-            # Copy files to temp directory from current site
-            rm -rf *
-            cp -r "${SITE_PATH}/public/application/files/"* . 2>/dev/null || true
-            
-            # Commit and push
-            git add -A
-            if ! git diff --staged --quiet; then
-                git commit -m "Sync files $(date +%Y-%m-%d\ %H:%M:%S)" || true
-                # Pull first to merge any remote changes, then push
-                if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
-                    git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
-                fi
-                git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
-            else
-                # Even if no changes, pull to stay in sync
-                if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
-                    git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
-                fi
-            fi
-            echo "✓ Files pushed to Git"
-        else
-            # Pull direction - pull files from Git
-            local selected_tag="${1:-latest}"  # Tag to checkout, or "latest" for branch HEAD
-            echo "Pulling files from Git..."
-            
-            # Clean up and recreate to ensure clean state
-            if [ -d "${FILES_TEMP_DIR}" ]; then
-                echo "Cleaning up existing temp directory..."
-                rm -rf "${FILES_TEMP_DIR}"
-            fi
-            
-            mkdir -p "${FILES_TEMP_DIR}"
-            cd "${FILES_TEMP_DIR}"
-            git init
-            git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
-            
-            # Fetch including tags
-            git fetch origin "${FILES_GIT_BRANCH}" "refs/tags/*:refs/tags/*"
-            
-            # Checkout based on tag or branch
-            if [ "$selected_tag" = "latest" ]; then
-                git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
-                echo "  Using latest snapshot from branch: ${FILES_GIT_BRANCH}"
-            else
-                git checkout "${selected_tag}"
-                echo "  Using snapshot tag: ${selected_tag}"
-            fi
-            
-            # Copy to local files directory using rsync
-            # Ensure the target directory exists
-            mkdir -p "${SITE_PATH}/public/application/files"
-            
-            # Use rsync to copy files and show statistics
-            # Exclude database and cache directories (they're stored separately in Git)
-            if [ -n "$(ls -A "${FILES_TEMP_DIR}" 2>/dev/null)" ]; then
-                echo "  Syncing files with rsync..."
-                # Use rsync with stats to show what's being copied
-                # -a: archive mode (preserves permissions, timestamps, etc.)
-                # -v: verbose
-                # --stats: show transfer statistics
-                # --exclude: exclude database and cache directories
-                rsync_output=$(rsync -av --stats \
-                    --exclude='database' \
-                    --exclude='cache' \
-                    --exclude='.git' \
-                    "${FILES_TEMP_DIR}/" "${SITE_PATH}/public/application/files/" 2>&1)
-                
-                # Extract statistics from rsync output (handle different rsync versions)
-                # Try to get number of files transferred/changed
-                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-                files_created=$(echo "$rsync_output" | grep -E "Number of created files" | grep -oE "[0-9]+" | head -1 || echo "0")
-                files_deleted=$(echo "$rsync_output" | grep -E "Number of deleted files" | grep -oE "[0-9]+" | head -1 || echo "0")
-                
-                # Show summary
-                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                    echo "  Files synced: ${files_transferred} file(s) transferred"
-                    if [ -n "$files_created" ] && [ "$files_created" != "0" ] && [ "$files_created" != "" ]; then
-                        echo "  New files: ${files_created} file(s) created"
-                    fi
-                    if [ -n "$files_deleted" ] && [ "$files_deleted" != "0" ] && [ "$files_deleted" != "" ]; then
-                        echo "  Removed files: ${files_deleted} file(s) deleted"
-                    fi
-                else
-                    echo "  No files needed to be synced (all files are up to date)"
-                fi
-                
-                # Set proper permissions (readable by web server)
-                chmod -R u+rw "${SITE_PATH}/public/application/files" 2>/dev/null || true
-                find "${SITE_PATH}/public/application/files" -type d -exec chmod 755 {} \; 2>/dev/null || true
-                find "${SITE_PATH}/public/application/files" -type f -exec chmod 644 {} \; 2>/dev/null || true
-                echo "  Set proper file permissions"
-            else
-                print_warning "No files found in Git repository to copy"
-            fi
-            
-            echo "✓ Uploaded files synced via Git (images, documents, thumbnails)"
-        fi
-    else
-        echo "Skipped uploaded files sync"
-        print_warning "Uploaded images and files were NOT synced. You may need to sync them manually."
-    fi
-}
-
-# Sync config files via Git (handles both push and pull)
-# This syncs Concrete CMS configuration files (config/, themes/, blocks/, packages/, etc.)
-pull_config_files() {
-    print_step "Syncing config files via Git..."
-    
-    if [ -z "$FILES_GIT_REPO" ]; then
-        echo "FILES_GIT_REPO not set - skipping config file sync via Git"
-        return 0
-    fi
-    
-    if [ "$SYNC_DIRECTION" = "push" ]; then
-        # Push direction - push config files to Git
-        echo "Pushing config files to Git..."
-        
-        # Clean up and recreate temp directory
-        if [ -d "${CONFIG_TEMP_DIR}" ]; then
-            rm -rf "${CONFIG_TEMP_DIR}"
-        fi
-        
-        mkdir -p "${CONFIG_TEMP_DIR}"
-        cd "${CONFIG_TEMP_DIR}"
-        git init
-        git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
-        
-        # Try to fetch existing branch
-        git fetch origin "${FILES_GIT_BRANCH}" 2>/dev/null || true
-        if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}" 2>/dev/null; then
-            git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
-        else
-            git checkout -b "${FILES_GIT_BRANCH}"
-        fi
-        
-        # Copy config files from current site
-        # Sync entire application/ directory (excluding files/, cache/, node_modules/, generated files, and most of .git/)
-        # This ensures we catch all custom directories (express/, user_exports/, etc.) mentioned in docs as "and more"
-        if [ -d "${SITE_PATH}/public/application" ]; then
-            # Use rsync to copy everything except files/, cache/, node_modules/, generated Doctrine proxies
-            # For .git folders, only sync minimal metadata needed to pull updates later (config, HEAD, refs)
-            rsync -av \
-                --exclude='files' \
-                --exclude='cache' \
-                --exclude='node_modules' \
-                --exclude='**/node_modules' \
-                --exclude='config/doctrine/proxies' \
-                --exclude='bootstrap/' \
-                --exclude='.git/objects' \
-                --exclude='.git/packed-refs' \
-                --exclude='.git/index' \
-                --exclude='.git/logs' \
-                --exclude='.git/hooks' \
-                --exclude='.git/info' \
-                --include='.git/config' \
-                --include='.git/HEAD' \
-                --include='.git/refs/remotes/origin/**' \
-                --include='.git/refs/heads/**' \
-                --exclude='.git/**' \
-                "${SITE_PATH}/public/application/" "${CONFIG_TEMP_DIR}/application/" 2>/dev/null || true
-        fi
-        
-        # Also sync public/packages/ (package code/assets, separate from application/packages/)
-        # Apply same exclusions as application/ (cache, node_modules, .git objects, etc.)
-        if [ -d "${SITE_PATH}/public/packages" ]; then
-            echo "  Syncing public/packages/ directory..."
-            mkdir -p "${CONFIG_TEMP_DIR}/packages"
-            rsync -av \
-                --exclude='node_modules' \
-                --exclude='**/node_modules' \
-                --exclude='cache' \
-                --exclude='config/doctrine/proxies' \
-                --exclude='.git/objects' \
-                --exclude='.git/packed-refs' \
-                --exclude='.git/index' \
-                --exclude='.git/logs' \
-                --exclude='.git/hooks' \
-                --exclude='.git/info' \
-                --include='.git/config' \
-                --include='.git/HEAD' \
-                --include='.git/refs/remotes/origin/**' \
-                --include='.git/refs/heads/**' \
-                --exclude='.git/**' \
-                "${SITE_PATH}/public/packages/" "${CONFIG_TEMP_DIR}/packages/" 2>&1 || true
-            if [ -d "${CONFIG_TEMP_DIR}/packages" ] && [ "$(ls -A "${CONFIG_TEMP_DIR}/packages" 2>/dev/null)" ]; then
-                echo "  ✓ Packages directory synced ($(find "${CONFIG_TEMP_DIR}/packages" -type f | wc -l | tr -d ' ') files)"
-            else
-                echo "  ⚠ Warning: Packages directory is empty or not found"
-            fi
-        else
-            echo "  ⊘ No public/packages/ directory found to sync"
-        fi
-        
-        # Commit and push
-        git add -A
-        if ! git diff --staged --quiet; then
-            git commit -m "Sync config files $(date +%Y-%m-%d\ %H:%M:%S)" || true
-            if git show-ref --verify --quiet "refs/remotes/origin/${FILES_GIT_BRANCH}"; then
-                git pull origin "${FILES_GIT_BRANCH}" --no-edit 2>/dev/null || true
-            fi
-            git push origin "HEAD:${FILES_GIT_BRANCH}" || git push -u origin "${FILES_GIT_BRANCH}"
-            echo "✓ Config files pushed to Git"
-        else
-            echo "No config file changes to sync"
-        fi
-    else
-        # Pull direction - pull config files from Git
-        local selected_tag="${1:-latest}"  # Tag to checkout, or "latest" for branch HEAD
-        echo "Pulling config files from Git..."
-        
-        # Clean up and recreate
-        if [ -d "${CONFIG_TEMP_DIR}" ]; then
-            rm -rf "${CONFIG_TEMP_DIR}"
-        fi
-        
-        mkdir -p "${CONFIG_TEMP_DIR}"
-        cd "${CONFIG_TEMP_DIR}"
-        git init
-        git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
-        
-        # Fetch including tags
-        git fetch origin "${FILES_GIT_BRANCH}" "refs/tags/*:refs/tags/*"
-        
-        # Checkout based on tag or branch
-        if [ "$selected_tag" = "latest" ]; then
-            git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
-            echo "  Using latest snapshot from branch: ${FILES_GIT_BRANCH}"
-        else
-            git checkout "${selected_tag}"
-            echo "  Using snapshot tag: ${selected_tag}"
-        fi
-        
-        # Copy config files to local site using rsync
-        # Sync entire application/ directory (excluding files/, cache/, node_modules/, and generated files)
-        # For .git folders, only sync minimal metadata needed to pull updates later (config, HEAD, refs)
-        total_config_changed=0
-        
-        if [ -d "${CONFIG_TEMP_DIR}/application" ]; then
-            echo "  Syncing application directory (config, themes, blocks, packages, express, etc.)..."
-            rsync_output=$(            rsync -av --stats \
-                --exclude='files' \
-                --exclude='cache' \
-                --exclude='node_modules' \
-                --exclude='**/node_modules' \
-                --exclude='config/doctrine/proxies' \
-                --exclude='bootstrap/' \
-                --exclude='.git/objects' \
-                --exclude='.git/packed-refs' \
-                --exclude='.git/index' \
-                --exclude='.git/logs' \
-                --exclude='.git/hooks' \
-                --exclude='.git/info' \
-                --include='.git/config' \
-                --include='.git/HEAD' \
-                --include='.git/refs/remotes/origin/**' \
-                --include='.git/refs/heads/**' \
-                --exclude='.git/**' \
-                "${CONFIG_TEMP_DIR}/application/" "${SITE_PATH}/public/application/" 2>&1)
-            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                total_config_changed=$((total_config_changed + files_transferred))
-            fi
-        fi
-        
-        # Also sync public/packages/ (package code/assets, separate from application/packages/)
-        # Apply same exclusions as application/ (cache, node_modules, .git objects, etc.)
-        if [ -d "${CONFIG_TEMP_DIR}/packages" ] && [ "$(ls -A "${CONFIG_TEMP_DIR}/packages" 2>/dev/null)" ]; then
-            echo "  Syncing packages directory..."
-            mkdir -p "${SITE_PATH}/public/packages"
-            rsync_output=$(rsync -av --stats \
-                --exclude='node_modules' \
-                --exclude='**/node_modules' \
-                --exclude='cache' \
-                --exclude='config/doctrine/proxies' \
-                --exclude='.git/objects' \
-                --exclude='.git/packed-refs' \
-                --exclude='.git/index' \
-                --exclude='.git/logs' \
-                --exclude='.git/hooks' \
-                --exclude='.git/info' \
-                --include='.git/config' \
-                --include='.git/HEAD' \
-                --include='.git/refs/remotes/origin/**' \
-                --include='.git/refs/heads/**' \
-                --exclude='.git/**' \
-                "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/packages/" 2>&1)
-            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                total_config_changed=$((total_config_changed + files_transferred))
-                echo "  ✓ Packages synced: ${files_transferred} file(s)"
-            else
-                echo "  ⚠ Warning: No files transferred for packages directory"
-            fi
-        else
-            echo "  ⊘ No packages directory found in Git repository"
-        fi
-        
-        if [ "$total_config_changed" -eq 0 ] && [ ! -d "${CONFIG_TEMP_DIR}/application" ]; then
-            # Fallback: sync individual directories if application/ structure doesn't exist
-            total_config_files=0
-            total_config_changed=0
-            
-            if [ -d "${CONFIG_TEMP_DIR}/config" ]; then
-                mkdir -p "${SITE_PATH}/public/application/config"
-                echo "  Syncing config files..."
-                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/config/" "${SITE_PATH}/public/application/config/" 2>&1)
-                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                    total_config_files=$((total_config_files + files_transferred))
-                    total_config_changed=$((total_config_changed + files_transferred))
-                fi
-            fi
-            if [ -d "${CONFIG_TEMP_DIR}/themes" ]; then
-                mkdir -p "${SITE_PATH}/public/application/themes"
-                echo "  Syncing themes..."
-                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/themes/" "${SITE_PATH}/public/application/themes/" 2>&1)
-                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                    total_config_files=$((total_config_files + files_transferred))
-                    total_config_changed=$((total_config_changed + files_transferred))
-                fi
-            fi
-            if [ -d "${CONFIG_TEMP_DIR}/blocks" ]; then
-                mkdir -p "${SITE_PATH}/public/application/blocks"
-                echo "  Syncing blocks..."
-                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/blocks/" "${SITE_PATH}/public/application/blocks/" 2>&1)
-                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                    total_config_files=$((total_config_files + files_transferred))
-                    total_config_changed=$((total_config_changed + files_transferred))
-                fi
-            fi
-            if [ -d "${CONFIG_TEMP_DIR}/packages" ]; then
-                mkdir -p "${SITE_PATH}/public/packages"
-                echo "  Syncing packages..."
-                rsync_output=$(rsync -av --stats "${CONFIG_TEMP_DIR}/packages/" "${SITE_PATH}/public/packages/" 2>&1)
-                files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
-                if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
-                    total_config_files=$((total_config_files + files_transferred))
-                    total_config_changed=$((total_config_changed + files_transferred))
-                fi
-            fi
-        fi
-        
-        if [ "$total_config_changed" -gt 0 ]; then
-            echo "  ✓ Config files synced: ${total_config_changed} file(s) updated"
-        else
-            echo "  ✓ Config files are up to date (no changes needed)"
-        fi
-    fi
-}
 
 # Install dependencies
 install_dependencies() {
@@ -1376,13 +801,13 @@ main() {
             ;;
         -h|--help)
         echo "Usage: $0 [push|pull|fix]"
-        echo ""
-        echo "  push  - Push files/database from current environment to Git"
-        echo "  pull  - Pull files/database from Git to current environment"
+            echo ""
+            echo "  push  - Push files/database from current environment to Git"
+            echo "  pull  - Pull files/database from Git to current environment"
         echo "  fix   - Fix common post-sync issues (Doctrine proxies, bootstrap files, caches)"
         echo "         Note: Assumes package files are already synced. For controller errors,"
         echo "         run 'pull' first to sync package files from Git."
-        echo ""
+            echo ""
         echo "The command argument is REQUIRED."
             exit 0
             ;;
@@ -1447,10 +872,10 @@ main() {
         print_step "Preparing unified snapshot for Git..."
         
         if [ -z "$FILES_GIT_REPO" ]; then
-            print_error "FILES_GIT_REPO must be set in .deployment-config"
-            exit 1
-        fi
-        
+        print_error "FILES_GIT_REPO must be set in .deployment-config"
+        exit 1
+    fi
+    
         # Create single unified temp directory for all push operations
         UNIFIED_TEMP_DIR="${SCRIPT_DIR}/.unified-push-temp"
         if [ -d "${UNIFIED_TEMP_DIR}" ]; then
@@ -1539,7 +964,7 @@ main() {
         fi
         
         # 3. Add database (if not skipping)
-        if [ "$SYNC_DATABASE" = "auto" ]; then
+    if [ "$SYNC_DATABASE" = "auto" ]; then
             echo "  Adding database..."
             mkdir -p "${UNIFIED_TEMP_DIR}/database"
             DB_FILE="database/db_${TIMESTAMP}.sql.gz"
@@ -1565,60 +990,165 @@ main() {
         
         cd - >/dev/null 2>&1
     else
-        # Pull mode: use existing functions that handle tag selection
-        # Handle file syncing - always use Git
-        if [ -n "$FILES_GIT_REPO" ]; then
-            pull_config_files "${SELECTED_TAG}"  # Pass selected tag
-        else
+        # Pull mode: use unified structure (same as push)
+        print_step "Pulling unified snapshot from Git..."
+        
+        if [ -z "$FILES_GIT_REPO" ]; then
             print_error "FILES_GIT_REPO must be set in .deployment-config"
             exit 1
         fi
         
-        # Optionally pull uploaded files
-        pull_uploaded_files "${SELECTED_TAG}"  # Pass selected tag
+        # Create unified temp directory for all pull operations
+        if [ -d "${UNIFIED_TEMP_DIR}" ]; then
+            rm -rf "${UNIFIED_TEMP_DIR}"
+        fi
+        mkdir -p "${UNIFIED_TEMP_DIR}"
+        cd "${UNIFIED_TEMP_DIR}"
+        git init
+        git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
+        
+        # Fetch including tags
+        git fetch origin "${FILES_GIT_BRANCH}" "refs/tags/*:refs/tags/*" 2>/dev/null || true
+        
+        # Checkout based on tag or branch
+        if [ "$SELECTED_TAG" = "latest" ]; then
+            git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" 2>/dev/null || git checkout "${FILES_GIT_BRANCH}"
+            echo "  Using latest snapshot from branch: ${FILES_GIT_BRANCH}"
+        else
+            git checkout "${SELECTED_TAG}"
+            echo "  Using snapshot tag: ${SELECTED_TAG}"
+        fi
+        
+        # Pull config files (application/ and packages/)
+        if [ -d "${UNIFIED_TEMP_DIR}/application" ]; then
+            echo "  Syncing application directory (config, themes, blocks, packages, express, etc.)..."
+            rsync_output=$(rsync -av --stats \
+                --exclude='files' \
+                --exclude='cache' \
+                --exclude='node_modules' \
+                --exclude='**/node_modules' \
+                --exclude='config/doctrine/proxies' \
+                --exclude='bootstrap/' \
+                --exclude='.git/objects' \
+                --exclude='.git/packed-refs' \
+                --exclude='.git/index' \
+                --exclude='.git/logs' \
+                --exclude='.git/hooks' \
+                --exclude='.git/info' \
+                --include='.git/config' \
+                --include='.git/HEAD' \
+                --include='.git/refs/remotes/origin/**' \
+                --include='.git/refs/heads/**' \
+                --exclude='.git/**' \
+                "${UNIFIED_TEMP_DIR}/application/" "${SITE_PATH}/public/application/" 2>&1)
+            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                echo "  ✓ Application synced: ${files_transferred} file(s)"
+            fi
+        fi
+        
+        if [ -d "${UNIFIED_TEMP_DIR}/packages" ] && [ "$(ls -A "${UNIFIED_TEMP_DIR}/packages" 2>/dev/null)" ]; then
+            echo "  Syncing packages directory..."
+            mkdir -p "${SITE_PATH}/public/packages"
+            rsync_output=$(rsync -av --stats \
+                --exclude='node_modules' \
+                --exclude='**/node_modules' \
+                --exclude='cache' \
+                --exclude='config/doctrine/proxies' \
+                --exclude='.git/objects' \
+                --exclude='.git/packed-refs' \
+                --exclude='.git/index' \
+                --exclude='.git/logs' \
+                --exclude='.git/hooks' \
+                --exclude='.git/info' \
+                --include='.git/config' \
+                --include='.git/HEAD' \
+                --include='.git/refs/remotes/origin/**' \
+                --include='.git/refs/heads/**' \
+                --exclude='.git/**' \
+                "${UNIFIED_TEMP_DIR}/packages/" "${SITE_PATH}/public/packages/" 2>&1)
+            files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+            if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                echo "  ✓ Packages synced: ${files_transferred} file(s)"
+            fi
+        fi
+        
+        # Pull uploaded files (from files/ subdirectory)
+        if [ "$SYNC_UPLOADED_FILES" != "skip" ]; then
+            local sync_files="y"
+            if [ "$SYNC_UPLOADED_FILES" = "ask" ]; then
+                read -p "Do you want to sync uploaded files (images, documents)? (y/n) " -n 1 -r
+                echo
+                sync_files="$REPLY"
+            fi
+            
+            if [[ $sync_files =~ ^[Yy]$ ]]; then
+                if [ -d "${UNIFIED_TEMP_DIR}/files" ]; then
+                    echo "  Syncing uploaded files..."
+                    mkdir -p "${SITE_PATH}/public/application/files"
+                    rsync_output=$(rsync -av --stats \
+                        --exclude='database' \
+                        --exclude='cache' \
+                        --exclude='.git' \
+                        "${UNIFIED_TEMP_DIR}/files/" "${SITE_PATH}/public/application/files/" 2>&1)
+                    files_transferred=$(echo "$rsync_output" | grep -E "(Number of regular files transferred|Number of files transferred)" | grep -oE "[0-9]+" | head -1 || echo "0")
+                    files_created=$(echo "$rsync_output" | grep -E "Number of created files" | grep -oE "[0-9]+" | head -1 || echo "0")
+                    files_deleted=$(echo "$rsync_output" | grep -E "Number of deleted files" | grep -oE "[0-9]+" | head -1 || echo "0")
+                    
+                    if [ -n "$files_transferred" ] && [ "$files_transferred" != "0" ] && [ "$files_transferred" != "" ]; then
+                        echo "  ✓ Files synced: ${files_transferred} file(s) transferred"
+                        if [ -n "$files_created" ] && [ "$files_created" != "0" ] && [ "$files_created" != "" ]; then
+                            echo "    New files: ${files_created} file(s) created"
+                        fi
+                        if [ -n "$files_deleted" ] && [ "$files_deleted" != "0" ] && [ "$files_deleted" != "" ]; then
+                            echo "    Removed files: ${files_deleted} file(s) deleted"
+                        fi
+                    else
+                        echo "  ✓ Files are up to date (no changes needed)"
+                    fi
+                    
+                    # Set proper permissions
+                    chmod -R u+rw "${SITE_PATH}/public/application/files" 2>/dev/null || true
+                    find "${SITE_PATH}/public/application/files" -type d -exec chmod 755 {} \; 2>/dev/null || true
+                    find "${SITE_PATH}/public/application/files" -type f -exec chmod 644 {} \; 2>/dev/null || true
+                else
+                    echo "  ⊘ No files directory found in snapshot"
+                fi
+            fi
+        fi
         
         # Install dependencies
         install_dependencies
         
         # Handle database sync
         if [ "$SYNC_DATABASE" = "auto" ]; then
-            if [ -z "$FILES_GIT_REPO" ]; then
-                print_error "FILES_GIT_REPO must be set for database sync"
+            if [ -d "${UNIFIED_TEMP_DIR}/database" ]; then
+                # Find the latest database file
+                if [ -f "${UNIFIED_TEMP_DIR}/database/latest.sql.gz" ]; then
+                    DB_FILE="${UNIFIED_TEMP_DIR}/database/latest.sql.gz"
+                elif [ -n "$(find "${UNIFIED_TEMP_DIR}/database" -name "db_*.sql.gz" -type f 2>/dev/null | head -1)" ]; then
+                    DB_FILE=$(find "${UNIFIED_TEMP_DIR}/database" -name "db_*.sql.gz" -type f | sort -r | head -1)
+                else
+                    print_error "No database file found in snapshot"
+                    exit 1
+                fi
+                
+                if [ -f "$DB_FILE" ]; then
+                    import_database "${DB_FILE}"
+                else
+                    print_error "Database file not found: ${DB_FILE}"
+                    exit 1
+                fi
+            else
+                print_error "No database directory found in snapshot"
                 exit 1
             fi
-            # Pull direction - pull from Git and import
-            print_step "Syncing database from Git..."
-            # Call function - errors go to stderr (visible), file path to stdout (captured)
-            DB_FILE=$(pull_database_from_git "${SELECTED_TAG}" 2>&3)
-            EXIT_CODE=$?
-            # Restore stderr
-            exec 3>&2
-            # Trim only trailing newlines/carriage returns from the captured path (preserve spaces in path)
-            DB_FILE=$(printf '%s' "$DB_FILE" | sed 's/[\r\n]*$//')
-            
-            if [ $EXIT_CODE -eq 0 ] && [ -n "$DB_FILE" ]; then
-                # Verify file exists
-                if [ ! -f "$DB_FILE" ]; then
-                    print_error "Database file path returned but file not found: '${DB_FILE}'"
-                    print_error "File path length: ${#DB_FILE}"
-                    print_error "Directory exists: $([ -d "$(dirname "$DB_FILE" 2>/dev/null)" ] && echo 'yes' || echo 'no')"
-                    print_error "Directory contents:"
-                    ls -la "$(dirname "$DB_FILE" 2>/dev/null)" 2>/dev/null || echo "Cannot list directory"
-                    return 1
-                fi
-                import_database "${DB_FILE}"
-            else
-                if [ $EXIT_CODE -ne 0 ]; then
-                    print_error "Failed to pull database from Git (exit code: $EXIT_CODE)"
-                elif [ -z "$DB_FILE" ]; then
-                    print_error "Failed to pull database from Git - no file path returned"
-                    print_error "Captured output was empty or whitespace only"
-                fi
-                return 1
-            fi
-        else
-            echo "Database sync disabled (SYNC_DATABASE=skip)"
-        fi
+    else
+        echo "Database sync disabled (SYNC_DATABASE=skip)"
+    fi
+    
+        cd - >/dev/null 2>&1
+        rm -rf "${UNIFIED_TEMP_DIR}"
     fi
     
     # Clear caches and update packages (only when pulling)
