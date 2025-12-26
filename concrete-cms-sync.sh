@@ -1258,6 +1258,14 @@ BOOTSTRAP_START
         else
             echo "  ⚠ Proxy generation may have failed - ensure proxies directory is writable by web server"
         fi
+        
+        # Update packages to re-register controllers (fixes dashboard menu and page controller issues)
+        echo "  Updating packages to re-register controllers..."
+        $CONCRETE_CMD c5:package:update --all --force 2>/dev/null || true
+        
+        # Reindex content to fix multilingual page controller mappings
+        echo "  Reindexing content (fixes multilingual page controllers)..."
+        $CONCRETE_CMD task:reindex-content 2>/dev/null || true
     fi
     
     if [ "$fixed_anything" = true ]; then
@@ -1311,6 +1319,33 @@ clear_caches() {
     echo "✓ Caches cleared"
 }
 
+# Update packages to re-register controllers and single pages after database sync
+update_packages() {
+    print_step "Updating packages to re-register controllers..."
+    
+    if [ -f "${SITE_PATH}/vendor/bin/concrete" ] || [ -f "${SITE_PATH}/concrete/vendor/bin/concrete" ]; then
+        cd "${SITE_PATH}"
+        # Try concrete/vendor first (flat structure), then vendor (composer structure)
+        if [ -f "concrete/vendor/bin/concrete" ]; then
+            CONCRETE_CMD="./concrete/vendor/bin/concrete"
+        else
+            CONCRETE_CMD="./vendor/bin/concrete"
+        fi
+        
+        # Update all installed packages to re-register their controllers and single pages
+        # This is important after a database sync to ensure controllers are properly registered
+        echo "  Updating all packages..."
+        $CONCRETE_CMD c5:package:update --all --force 2>/dev/null || true
+        
+        # Reindex content to fix multilingual page controller mappings
+        # This can fix issues where multilingual pages exist but their controllers aren't found
+        echo "  Reindexing content (fixes multilingual page controllers)..."
+        $CONCRETE_CMD task:reindex-content 2>/dev/null || true
+        
+        echo "✓ Packages updated and content reindexed"
+    fi
+}
+
 # Main sync flow
 main() {
     # Parse command-line arguments - direction is REQUIRED
@@ -1333,18 +1368,22 @@ main() {
             ;;
         fix)
             # Fix mode: just fix issues, no syncing
+            # Note: This assumes package files are already synced. If you're seeing
+            # controller errors, run 'pull' first to sync package files from Git.
             check_prerequisites
             fix_site_issues
             exit 0
             ;;
         -h|--help)
-            echo "Usage: $0 [push|pull|fix]"
-            echo ""
-            echo "  push  - Push files/database from current environment to Git"
-            echo "  pull  - Pull files/database from Git to current environment"
-            echo "  fix   - Fix common post-sync issues (Doctrine proxies, bootstrap files, caches)"
-            echo ""
-            echo "The command argument is REQUIRED."
+        echo "Usage: $0 [push|pull|fix]"
+        echo ""
+        echo "  push  - Push files/database from current environment to Git"
+        echo "  pull  - Pull files/database from Git to current environment"
+        echo "  fix   - Fix common post-sync issues (Doctrine proxies, bootstrap files, caches)"
+        echo "         Note: Assumes package files are already synced. For controller errors,"
+        echo "         run 'pull' first to sync package files from Git."
+        echo ""
+        echo "The command argument is REQUIRED."
             exit 0
             ;;
         *)
@@ -1582,9 +1621,10 @@ main() {
         fi
     fi
     
-    # Clear caches (only when pulling)
+    # Clear caches and update packages (only when pulling)
     if [ "$SYNC_DIRECTION" = "pull" ]; then
         clear_caches
+        update_packages
     fi
     
     if [ "$SYNC_DIRECTION" = "push" ]; then
