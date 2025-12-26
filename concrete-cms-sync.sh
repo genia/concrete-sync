@@ -1245,6 +1245,12 @@ BOOTSTRAP_START
         $CONCRETE_CMD c5:clear-cache 2>/dev/null || true
         fixed_anything=true
         
+        # Clear Doctrine caches (can cause stale page references and dashboard menu issues)
+        echo "  Clearing Doctrine caches..."
+        $CONCRETE_CMD orm:clear-cache:metadata 2>/dev/null || true
+        $CONCRETE_CMD orm:clear-cache:query 2>/dev/null || true
+        $CONCRETE_CMD orm:clear-cache:result 2>/dev/null || true
+        
         # Generate Doctrine proxies for all entities (including Community Store and other packages)
         echo "  Regenerating Doctrine proxies..."
         if $CONCRETE_CMD orm:generate-proxies 2>/dev/null; then
