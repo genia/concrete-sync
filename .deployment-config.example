@@ -30,3 +30,9 @@ SYNC_UPLOADED_FILES="auto"  # Options: auto, ask, skip
 
 # Database sync behavior
 SYNC_DATABASE="auto"  # Options: auto, skip (auto = sync automatically, skip = never sync)
+
+# Database tables to exclude from sync (space-separated list)
+# Useful for excluding order data, inventory quantities, etc. from syncing
+# Example: DB_EXCLUDE_TABLES="CommunityStoreOrders CommunityStoreOrderItems CommunityStoreOrderProductAttributes"
+# Leave empty to sync all tables
+DB_EXCLUDE_TABLES=""  # e.g., "CommunityStoreOrders CommunityStoreOrderItems"

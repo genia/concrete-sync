@@ -35,7 +35,21 @@ echo "  Database: ${DB_DATABASE}"
 echo "  User: ${DB_USERNAME}"
 
 BACKUP_FILE="${BACKUP_DIR}/db_${TIMESTAMP}.sql.gz"
-mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | gzip > "${BACKUP_FILE}"
+
+# Build mysqldump command with table exclusions if specified
+MYSQLDUMP_CMD="mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF"
+
+# Add --ignore-table for each excluded table (if DB_EXCLUDE_TABLES is set)
+if [ -n "${DB_EXCLUDE_TABLES:-}" ]; then
+    echo "  Excluding tables: ${DB_EXCLUDE_TABLES}"
+    for table in $DB_EXCLUDE_TABLES; do
+        MYSQLDUMP_CMD="${MYSQLDUMP_CMD} --ignore-table=${DB_DATABASE}.${table}"
+    done
+fi
+
+MYSQLDUMP_CMD="${MYSQLDUMP_CMD} -h\"${DB_HOSTNAME}\" -u\"${DB_USERNAME}\" -p\"${DB_PASSWORD}\" \"${DB_DATABASE}\""
+
+eval "${MYSQLDUMP_CMD}" | gzip > "${BACKUP_FILE}"
 
 echo "✓ Database backed up to: ${BACKUP_FILE}"
 

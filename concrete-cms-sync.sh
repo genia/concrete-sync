@@ -48,6 +48,8 @@ DB_HOSTNAME="${DB_HOSTNAME:-}"
 DB_DATABASE="${DB_DATABASE:-}"
 DB_USERNAME="${DB_USERNAME:-}"
 DB_PASSWORD="${DB_PASSWORD:-}"
+DB_EXCLUDE_TABLES="${DB_EXCLUDE_TABLES:-}"  # Space-separated list of tables to exclude
+DB_EXCLUDE_TABLES="${DB_EXCLUDE_TABLES:-}"  # Space-separated list of tables to exclude
 
 # Set composer command
 if [ -n "$COMPOSER_DIR" ]; then
@@ -99,6 +101,9 @@ print_deployment_plan() {
                 echo "  ✓ Export database from: ${DB_HOSTNAME}/${DB_DATABASE}"
             else
                 echo "  ✓ Export database (credentials from config)"
+            fi
+            if [ -n "${DB_EXCLUDE_TABLES:-}" ]; then
+                echo "  ⊘ Excluding tables: ${DB_EXCLUDE_TABLES}"
             fi
             echo "  ✓ Push database to Git repository"
         else
@@ -968,9 +973,21 @@ main() {
             echo "  Adding database..."
             mkdir -p "${UNIFIED_TEMP_DIR}/database"
             DB_FILE="database/db_${TIMESTAMP}.sql.gz"
-            mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF \
-                -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" | \
-                gzip > "${UNIFIED_TEMP_DIR}/${DB_FILE}"
+            
+            # Build mysqldump command with table exclusions if specified
+            MYSQLDUMP_CMD="mysqldump --no-tablespaces --single-transaction --set-gtid-purged=OFF"
+            
+            # Add --ignore-table for each excluded table
+            if [ -n "$DB_EXCLUDE_TABLES" ]; then
+                echo "  Excluding tables: ${DB_EXCLUDE_TABLES}"
+                for table in $DB_EXCLUDE_TABLES; do
+                    MYSQLDUMP_CMD="${MYSQLDUMP_CMD} --ignore-table=${DB_DATABASE}.${table}"
+                done
+            fi
+            
+            MYSQLDUMP_CMD="${MYSQLDUMP_CMD} -h\"${DB_HOSTNAME}\" -u\"${DB_USERNAME}\" -p\"${DB_PASSWORD}\" \"${DB_DATABASE}\""
+            
+            eval "${MYSQLDUMP_CMD}" | gzip > "${UNIFIED_TEMP_DIR}/${DB_FILE}"
             ln -sf "db_${TIMESTAMP}.sql.gz" "${UNIFIED_TEMP_DIR}/database/latest.sql.gz" 2>/dev/null || \
                 cp "${UNIFIED_TEMP_DIR}/${DB_FILE}" "${UNIFIED_TEMP_DIR}/database/latest.sql.gz"
         fi
