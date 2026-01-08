@@ -1219,7 +1219,11 @@ main() {
                 echo "✓ Created unified snapshot tag: ${TAG_NAME}"
             fi
             cd - >/dev/null 2>&1
-            rm -rf "${UNIFIED_TEMP_DIR}"
+            # Keep temp directory for inspection (will be cleaned up on next push)
+            echo ""
+            echo "Snapshot directory kept at: ${UNIFIED_TEMP_DIR}"
+            echo "  - Database dump: ${UNIFIED_TEMP_DIR}/database/"
+            echo "  - Run 'gunzip -c ${UNIFIED_TEMP_DIR}/database/latest.sql.gz | grep TABLE' to inspect"
         else
             # Fallback: create tag in fresh checkout
             TAG_TEMP_DIR="${SCRIPT_DIR}/.tag-create-temp"
