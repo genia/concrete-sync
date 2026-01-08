@@ -1008,17 +1008,39 @@ main() {
             MYSQLDUMP_CMD="${MYSQLDUMP_CMD} -h\"${DB_HOSTNAME}\" -u\"${DB_USERNAME}\" -p\"${DB_PASSWORD}\" \"${DB_DATABASE}\""
             
             echo "  Exporting database..."
-            if eval "${MYSQLDUMP_CMD}" 2>&1 | gzip > "${UNIFIED_TEMP_DIR}/${DB_FILE}"; then
-                # Verify the dump was created and has content
-                if [ -f "${UNIFIED_TEMP_DIR}/${DB_FILE}" ] && [ -s "${UNIFIED_TEMP_DIR}/${DB_FILE}" ]; then
-                    DUMP_SIZE=$(du -h "${UNIFIED_TEMP_DIR}/${DB_FILE}" | cut -f1)
-                    echo "  ✓ Database exported (${DUMP_SIZE})"
-                else
-                    print_error "Database export failed: empty or missing file"
-                    exit 1
+            # Run mysqldump, capture stderr separately, pipe stdout to gzip
+            DUMP_ERRORS=$(mktemp)
+            set +e  # Don't exit on error temporarily
+            eval "${MYSQLDUMP_CMD}" 2>"${DUMP_ERRORS}" | gzip > "${UNIFIED_TEMP_DIR}/${DB_FILE}"
+            DUMP_EXIT_CODE=${PIPESTATUS[0]}
+            set -e
+            
+            # Check for errors
+            if [ $DUMP_EXIT_CODE -ne 0 ]; then
+                print_error "Database export failed (exit code: ${DUMP_EXIT_CODE})"
+                if [ -s "${DUMP_ERRORS}" ]; then
+                    echo "Error details:"
+                    cat "${DUMP_ERRORS}"
                 fi
+                rm -f "${DUMP_ERRORS}"
+                exit 1
+            fi
+            
+            # Show any warnings (but don't fail)
+            if [ -s "${DUMP_ERRORS}" ]; then
+                echo "  Warnings from mysqldump:"
+                cat "${DUMP_ERRORS}"
+            fi
+            rm -f "${DUMP_ERRORS}"
+            
+            # Verify the dump was created and has content
+            if [ -f "${UNIFIED_TEMP_DIR}/${DB_FILE}" ] && [ -s "${UNIFIED_TEMP_DIR}/${DB_FILE}" ]; then
+                DUMP_SIZE=$(du -h "${UNIFIED_TEMP_DIR}/${DB_FILE}" | cut -f1)
+                # Count tables in the dump for verification
+                TABLE_COUNT=$(gunzip -c "${UNIFIED_TEMP_DIR}/${DB_FILE}" | grep -c "^CREATE TABLE" || echo "0")
+                echo "  ✓ Database exported (${DUMP_SIZE}, ${TABLE_COUNT} tables)"
             else
-                print_error "Database export failed"
+                print_error "Database export failed: empty or missing file"
                 exit 1
             fi
             ln -sf "db_${TIMESTAMP}.sql.gz" "${UNIFIED_TEMP_DIR}/database/latest.sql.gz" 2>/dev/null || \
