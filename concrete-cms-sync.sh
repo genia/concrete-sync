@@ -516,19 +516,19 @@ import_database() {
     echo "Importing database..."
     IMPORT_ERROR=0
     if [[ "$DB_FILE" == *.gz ]]; then
+        # Use set -o pipefail to catch errors from any command in the pipeline
+        set +e  # Don't exit on error
         gunzip -c "${DB_FILE}" | mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" 2>&1
-        IMPORT_ERROR=${PIPESTATUS[0]}  # Check gunzip exit code
-        if [ $IMPORT_ERROR -ne 0 ]; then
-            print_error "Database decompression failed"
-            return 1
-        fi
-        IMPORT_ERROR=${PIPESTATUS[1]}  # Check mysql exit code
+        IMPORT_ERROR=$?
+        set -e
     else
+        set +e
         mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" < "${DB_FILE}" 2>&1
         IMPORT_ERROR=$?
+        set -e
     fi
     
-    if [ $IMPORT_ERROR -eq 0 ]; then
+    if [ "$IMPORT_ERROR" -eq 0 ]; then
         echo "✓ Database imported successfully"
         
         # Verify import by checking if key tables exist
