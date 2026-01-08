@@ -514,20 +514,38 @@ import_database() {
     
     # Import database
     echo "Importing database..."
+    IMPORT_ERROR=0
     if [[ "$DB_FILE" == *.gz ]]; then
-        gunzip -c "${DB_FILE}" | mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}"
+        gunzip -c "${DB_FILE}" | mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" 2>&1
+        IMPORT_ERROR=${PIPESTATUS[0]}  # Check gunzip exit code
+        if [ $IMPORT_ERROR -ne 0 ]; then
+            print_error "Database decompression failed"
+            return 1
+        fi
+        IMPORT_ERROR=${PIPESTATUS[1]}  # Check mysql exit code
     else
-        mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" < "${DB_FILE}"
+        mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" < "${DB_FILE}" 2>&1
+        IMPORT_ERROR=$?
     fi
     
-    if [ $? -eq 0 ]; then
-        echo "✓ Database imported"
+    if [ $IMPORT_ERROR -eq 0 ]; then
+        echo "✓ Database imported successfully"
+        
+        # Verify import by checking if key tables exist
+        echo "Verifying database import..."
+        TABLE_COUNT=$(mysql -h"${DB_HOSTNAME}" -u"${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_DATABASE}" \
+            -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${DB_DATABASE}';" \
+            -s -N 2>/dev/null || echo "0")
+        
+        if [ "$TABLE_COUNT" -gt "0" ]; then
+            echo "✓ Database verification: ${TABLE_COUNT} table(s) found"
+        else
+            print_warning "Database import completed but no tables found - this may indicate an issue"
+        fi
     else
-        print_error "Database import failed"
+        print_error "Database import failed (exit code: ${IMPORT_ERROR})"
         return 1
     fi
-    
-    echo "✓ Database imported"
 }
 
 
@@ -983,11 +1001,26 @@ main() {
                 for table in $DB_EXCLUDE_TABLES; do
                     MYSQLDUMP_CMD="${MYSQLDUMP_CMD} --ignore-table=${DB_DATABASE}.${table}"
                 done
+            else
+                echo "  Including all tables (no exclusions)"
             fi
             
             MYSQLDUMP_CMD="${MYSQLDUMP_CMD} -h\"${DB_HOSTNAME}\" -u\"${DB_USERNAME}\" -p\"${DB_PASSWORD}\" \"${DB_DATABASE}\""
             
-            eval "${MYSQLDUMP_CMD}" | gzip > "${UNIFIED_TEMP_DIR}/${DB_FILE}"
+            echo "  Exporting database..."
+            if eval "${MYSQLDUMP_CMD}" 2>&1 | gzip > "${UNIFIED_TEMP_DIR}/${DB_FILE}"; then
+                # Verify the dump was created and has content
+                if [ -f "${UNIFIED_TEMP_DIR}/${DB_FILE}" ] && [ -s "${UNIFIED_TEMP_DIR}/${DB_FILE}" ]; then
+                    DUMP_SIZE=$(du -h "${UNIFIED_TEMP_DIR}/${DB_FILE}" | cut -f1)
+                    echo "  ✓ Database exported (${DUMP_SIZE})"
+                else
+                    print_error "Database export failed: empty or missing file"
+                    exit 1
+                fi
+            else
+                print_error "Database export failed"
+                exit 1
+            fi
             ln -sf "db_${TIMESTAMP}.sql.gz" "${UNIFIED_TEMP_DIR}/database/latest.sql.gz" 2>/dev/null || \
                 cp "${UNIFIED_TEMP_DIR}/${DB_FILE}" "${UNIFIED_TEMP_DIR}/database/latest.sql.gz"
         fi
