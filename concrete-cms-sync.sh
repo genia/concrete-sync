@@ -172,6 +172,17 @@ setup_git_credentials() {
     echo "     or set up SSH keys for your GitHub account"
 }
 
+# Configure Git for low-resource environments (shared hosting)
+# This prevents "unable to create thread: Resource temporarily unavailable" errors
+configure_git_for_low_resources() {
+    # Limit pack threads to 1 (prevents thread exhaustion on shared hosts)
+    git config pack.threads 1
+    # Limit memory window for delta compression
+    git config pack.windowMemory 100m
+    # Limit pack delta cache size
+    git config pack.deltaCacheSize 100m
+}
+
 # Create and push a Git tag for this snapshot
 create_snapshot_tag() {
     local tag_type="${1:-sync}"  # db, files, config, or sync (default)
@@ -214,6 +225,7 @@ select_snapshot_tag() {
     
     # Initialize git and fetch tags
     git init >/dev/null 2>&1
+    configure_git_for_low_resources
     git remote add origin "${repo_url}" >/dev/null 2>&1 || git remote set-url origin "${repo_url}" >/dev/null 2>&1
     
     # Fetch tags from remote (fetch both branch and tags)
@@ -907,6 +919,7 @@ main() {
         mkdir -p "${UNIFIED_TEMP_DIR}"
         cd "${UNIFIED_TEMP_DIR}"
         git init
+        configure_git_for_low_resources
         git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
         
         # Fetch and checkout existing branch
@@ -1077,6 +1090,7 @@ main() {
         mkdir -p "${UNIFIED_TEMP_DIR}"
         cd "${UNIFIED_TEMP_DIR}"
         git init
+        configure_git_for_low_resources
         git remote add origin "${FILES_GIT_REPO}" 2>/dev/null || git remote set-url origin "${FILES_GIT_REPO}"
         
         # Fetch including tags
@@ -1255,6 +1269,7 @@ main() {
             mkdir -p "${TAG_TEMP_DIR}"
             cd "${TAG_TEMP_DIR}"
             git init >/dev/null 2>&1
+            configure_git_for_low_resources
             git remote add origin "${FILES_GIT_REPO}" >/dev/null 2>&1 || git remote set-url origin "${FILES_GIT_REPO}" >/dev/null 2>&1
             git fetch origin "${FILES_GIT_BRANCH}" >/dev/null 2>&1
             git checkout -b "${FILES_GIT_BRANCH}" "origin/${FILES_GIT_BRANCH}" >/dev/null 2>&1 || git checkout "${FILES_GIT_BRANCH}" >/dev/null 2>&1
